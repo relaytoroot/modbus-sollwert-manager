@@ -1,0 +1,16 @@
+.venv/
+build/
+dist/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+tests/artifacts/
