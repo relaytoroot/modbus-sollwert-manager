@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -32,7 +33,9 @@ class PlanIoTests(unittest.TestCase):
             window.slave_id_input.setValue(1)
             window.keepalive_input.setValue(20)
             window.pt1_p_input.setValue(150)
+            window.pt1_p_register_input.setValue(1200)
             window.pt1_q_input.setValue(250)
+            window.pt1_q_register_input.setValue(1300)
             window._set_combo_value(window.register_format_combo, RegisterFormat.LITTLE_BYTE_SWAP.value)
 
             window.channel_label_inputs[0].setText("Freigabe")
@@ -84,7 +87,9 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window.slave_id_input.value(), 1)
         self.assertEqual(self.window.keepalive_input.value(), 20)
         self.assertEqual(self.window.pt1_p_input.value(), 150)
+        self.assertEqual(self.window.pt1_p_register_input.value(), 1200)
         self.assertEqual(self.window.pt1_q_input.value(), 250)
+        self.assertEqual(self.window.pt1_q_register_input.value(), 1300)
         self.assertEqual(self.window.register_format_combo.currentData(), RegisterFormat.LITTLE_BYTE_SWAP)
 
         self.assertEqual(self.window.channel_label_inputs[0].text(), "Freigabe")
@@ -121,6 +126,8 @@ class PlanIoTests(unittest.TestCase):
         self.window.host_input.setText("10.0.0.77")
         self.window.keepalive_input.setValue(30)
         self.window.pt1_p_input.setValue(500)
+        self.window.pt1_p_register_input.setValue(2222)
+        self.window.pt1_q_register_input.setValue(3333)
         self.window.channel_label_inputs[2].setText("Active Power")
         self.window.start_value_inputs[1].setText("99")
         self.window.row_checkboxes[1].setChecked(True)
@@ -148,6 +155,8 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(connection["host"], "10.0.0.77")
         self.assertEqual(connection["keepalive_interval_seconds"], 30)
         self.assertEqual(connection["pt1_p_ms"], 500)
+        self.assertEqual(connection["pt1_p_start_register"], 2222)
+        self.assertEqual(connection["pt1_q_start_register"], 3333)
         self.assertEqual(saved_channels[2][1], "Active Power")
         self.assertEqual(saved_channels[1][4], "99")
         self.assertTrue(saved_rows[1][0])
@@ -167,6 +176,18 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window._item_text(0, self.window.COLUMN_DURATION), "7")
         self.assertEqual(self.window._item_text(1, self.window.COLUMN_DURATION), "7")
         self.assertEqual(self.window._item_text(2, self.window.COLUMN_DURATION), "7")
+
+    def test_connect_can_retry_after_failure(self) -> None:
+        first_error = RuntimeError("slave antwortet nicht")
+        self.window.modbus_service.connect = Mock(side_effect=[first_error, None])
+        self.window.modbus_service.disconnect = Mock()
+        self.window._show_retry_dialog = Mock(side_effect=[True])
+
+        self.window._on_connect_clicked()
+
+        self.assertEqual(self.window.modbus_service.connect.call_count, 2)
+        self.window.modbus_service.disconnect.assert_called_once()
+        self.window._show_retry_dialog.assert_called_once()
 
 
 if __name__ == "__main__":

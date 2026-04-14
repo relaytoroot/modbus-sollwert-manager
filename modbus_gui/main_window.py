@@ -249,11 +249,17 @@ class ModbusMainWindow(QMainWindow):
         self.pt1_p_input = QSpinBox()
         self.pt1_p_input.setRange(0, 1_000_000)
         self.pt1_p_input.setSuffix(" ms")
-        self.pt1_p_input.setMaximumWidth(100)
+        self.pt1_p_input.setMaximumWidth(92)
+        self.pt1_p_register_input = QSpinBox()
+        self.pt1_p_register_input.setRange(0, 65535)
+        self.pt1_p_register_input.setMaximumWidth(84)
         self.pt1_q_input = QSpinBox()
         self.pt1_q_input.setRange(0, 1_000_000)
         self.pt1_q_input.setSuffix(" ms")
-        self.pt1_q_input.setMaximumWidth(100)
+        self.pt1_q_input.setMaximumWidth(92)
+        self.pt1_q_register_input = QSpinBox()
+        self.pt1_q_register_input.setRange(0, 65535)
+        self.pt1_q_register_input.setMaximumWidth(84)
 
         for index in range(4):
             register_input = QSpinBox()
@@ -261,18 +267,18 @@ class ModbusMainWindow(QMainWindow):
             register_input.setValue((0, 1, 3, 5)[index])
             channel_label_input = QLineEdit()
             channel_label_input.setPlaceholderText("z. B. Wirkleistung")
-            channel_label_input.setMaximumWidth(180)
+            channel_label_input.setMaximumWidth(156)
             type_input = QComboBox()
             for value_type in RegisterValueType:
                 type_input.addItem(value_type.label, value_type)
             type_input.setCurrentIndex(type_input.findData(RegisterValueType.FLOAT32))
             start_value_input = QLineEdit()
             start_value_input.setPlaceholderText("Startwert")
-            start_value_input.setMaximumWidth(100)
+            start_value_input.setMaximumWidth(88)
             send_value_button = QPushButton("Send")
-            send_value_button.setMaximumWidth(72)
-            register_input.setMaximumWidth(96)
-            type_input.setMaximumWidth(148)
+            send_value_button.setMaximumWidth(64)
+            register_input.setMaximumWidth(84)
+            type_input.setMaximumWidth(126)
             self.register_inputs.append(register_input)
             self.channel_label_inputs.append(channel_label_input)
             self.type_inputs.append(type_input)
@@ -428,14 +434,17 @@ class ModbusMainWindow(QMainWindow):
 
     def _build_channel_group(self) -> QGroupBox:
         group = QGroupBox("Kanalzuordnung")
+        group.setMaximumHeight(190)
         outer_layout = QHBoxLayout(group)
         outer_layout.setContentsMargins(12, 12, 12, 12)
         outer_layout.setSpacing(12)
 
         mapping_widget = QWidget()
+        mapping_widget.setMaximumWidth(600)
         layout = QGridLayout(mapping_widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(8)
+        layout.setHorizontalSpacing(6)
+        layout.setVerticalSpacing(4)
         layout.addWidget(QLabel("Kanal"), 0, 0)
         layout.addWidget(QLabel("Bezeichnung"), 0, 1)
         layout.addWidget(QLabel("Startregister"), 0, 2)
@@ -454,16 +463,20 @@ class ModbusMainWindow(QMainWindow):
             layout.addWidget(send_value_button, index, 5)
 
         pt1_widget = QWidget()
-        pt1_widget.setMaximumWidth(180)
+        pt1_widget.setMaximumWidth(165)
         pt1_layout = QFormLayout(pt1_widget)
         pt1_layout.setContentsMargins(0, 0, 0, 0)
         pt1_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        pt1_layout.setHorizontalSpacing(8)
+        pt1_layout.setHorizontalSpacing(6)
+        pt1_layout.setVerticalSpacing(6)
         pt1_layout.addRow("PT1 P [ms]", self.pt1_p_input)
+        pt1_layout.addRow("PT1 P Reg.", self.pt1_p_register_input)
         pt1_layout.addRow("PT1 Q [ms]", self.pt1_q_input)
+        pt1_layout.addRow("PT1 Q Reg.", self.pt1_q_register_input)
 
-        outer_layout.addWidget(mapping_widget, 1)
+        outer_layout.addWidget(mapping_widget, 0, Qt.AlignLeft | Qt.AlignTop)
         outer_layout.addWidget(pt1_widget, 0, Qt.AlignTop)
+        outer_layout.addStretch(1)
         return group
 
     def _build_table_group(self) -> QGroupBox:
@@ -649,6 +662,8 @@ class ModbusMainWindow(QMainWindow):
             send_value_button.clicked.connect(self._on_send_start_value_clicked)
         self.pt1_p_input.valueChanged.connect(self._mark_dirty)
         self.pt1_q_input.valueChanged.connect(self._mark_dirty)
+        self.pt1_p_register_input.valueChanged.connect(self._mark_dirty)
+        self.pt1_q_register_input.valueChanged.connect(self._mark_dirty)
 
     def _configure_table(self) -> None:
         self._update_table_headers()
@@ -793,15 +808,20 @@ class ModbusMainWindow(QMainWindow):
 
     def _on_connect_clicked(self) -> None:
         settings = self._current_settings()
-        try:
-            self.modbus_service.connect(settings)
-        except Exception as exc:
-            self._set_status(STATUS_ERROR, "Fehler")
-            self._append_log(
-                f"Verbindung fehlgeschlagen: {settings.host}:{settings.port}, Geraete-ID {settings.slave_id}. {exc}"
-            )
-            self._show_error("Verbindung fehlgeschlagen", str(exc))
-            return
+        while True:
+            try:
+                self.modbus_service.connect(settings)
+            except Exception as exc:
+                self.modbus_service.disconnect()
+                self._set_connection_widgets(False)
+                self._set_status(STATUS_ERROR, "Fehler")
+                self._append_log(
+                    f"Verbindung fehlgeschlagen: {settings.host}:{settings.port}, Geraete-ID {settings.slave_id}. {exc}"
+                )
+                if self._show_retry_dialog("Verbindung fehlgeschlagen", str(exc)):
+                    continue
+                return
+            break
         self._set_status(STATUS_CONNECTED, "Verbunden")
         self._append_log(
             "Verbindung hergestellt: "
@@ -927,7 +947,9 @@ class ModbusMainWindow(QMainWindow):
         sheet_connection.append(["register_format", self.register_format_combo.currentData().value])
         sheet_connection.append(["keepalive_interval_seconds", self.keepalive_input.value()])
         sheet_connection.append(["pt1_p_ms", self.pt1_p_input.value()])
+        sheet_connection.append(["pt1_p_start_register", self.pt1_p_register_input.value()])
         sheet_connection.append(["pt1_q_ms", self.pt1_q_input.value()])
+        sheet_connection.append(["pt1_q_start_register", self.pt1_q_register_input.value()])
 
         sheet_channels = workbook.create_sheet("Kanaele")
         sheet_channels.append(["name", "label", "start_register", "value_type", "start_value"])
@@ -977,7 +999,9 @@ class ModbusMainWindow(QMainWindow):
         self.slave_id_input.setValue(int(connection.get("slave_id", 1)))
         self.keepalive_input.setValue(int(connection.get("keepalive_interval_seconds", 20)))
         self.pt1_p_input.setValue(int(connection.get("pt1_p_ms", 0)))
+        self.pt1_p_register_input.setValue(int(connection.get("pt1_p_start_register", 0)))
         self.pt1_q_input.setValue(int(connection.get("pt1_q_ms", 0)))
+        self.pt1_q_register_input.setValue(int(connection.get("pt1_q_start_register", 0)))
 
         if "register_format" in connection:
             register_format_value = connection.get("register_format", RegisterFormat.BIG.value)
@@ -1300,6 +1324,16 @@ class ModbusMainWindow(QMainWindow):
 
     def _show_error(self, title: str, message: str) -> None:
         QMessageBox.critical(self, title, message)
+
+    def _show_retry_dialog(self, title: str, message: str) -> bool:
+        answer = QMessageBox.question(
+            self,
+            title,
+            f"{message}\n\nMoechtest du es erneut versuchen?",
+            QMessageBox.Retry | QMessageBox.Cancel,
+            QMessageBox.Retry,
+        )
+        return answer == QMessageBox.Retry
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         if not self._confirm_discard_unsaved_changes("Vor dem Schliessen speichern?", "Es gibt ungespeicherte Aenderungen."):
