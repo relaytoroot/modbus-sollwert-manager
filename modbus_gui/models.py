@@ -92,6 +92,15 @@ class ConnectionSettings:
 
 
 @dataclass(slots=True)
+class RemoteConnectionSettings:
+    enabled: bool = False
+    auto_control: bool = True
+    host: str = "127.0.0.1"
+    port: int = 5025
+    filename: str = ""
+
+
+@dataclass(slots=True)
 class ChannelConfig:
     name: str
     label: str = ""

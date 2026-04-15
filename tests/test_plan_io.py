@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 from PyQt5.QtWidgets import QApplication
 
 from modbus_gui.main_window import ModbusMainWindow
-from modbus_gui.models import RegisterFormat, RegisterValueType
+from modbus_gui.models import ConnectionSettings, RegisterFormat, RegisterValueType
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_plan.xlsx"
@@ -36,6 +36,11 @@ class PlanIoTests(unittest.TestCase):
             window.pt1_p_register_input.setValue(1200)
             window.pt1_q_input.setValue(250)
             window.pt1_q_register_input.setValue(1300)
+            window.remote_enabled_checkbox.setChecked(True)
+            window.remote_auto_checkbox.setChecked(True)
+            window.remote_host_input.setText("192.168.0.10")
+            window.remote_port_input.setValue(5025)
+            window.remote_filename_input.setText("Bachmann_SPPC_EN_20260325_112003_001.dmd")
             window._set_combo_value(window.register_format_combo, RegisterFormat.LITTLE_BYTE_SWAP.value)
 
             window.channel_label_inputs[0].setText("Freigabe")
@@ -90,6 +95,11 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window.pt1_p_register_input.value(), 1200)
         self.assertEqual(self.window.pt1_q_input.value(), 250)
         self.assertEqual(self.window.pt1_q_register_input.value(), 1300)
+        self.assertTrue(self.window.remote_enabled_checkbox.isChecked())
+        self.assertTrue(self.window.remote_auto_checkbox.isChecked())
+        self.assertEqual(self.window.remote_host_input.text(), "192.168.0.10")
+        self.assertEqual(self.window.remote_port_input.value(), 5025)
+        self.assertEqual(self.window.remote_filename_input.text(), "Bachmann_SPPC_EN_20260325_112003_001.dmd")
         self.assertEqual(self.window.register_format_combo.currentData(), RegisterFormat.LITTLE_BYTE_SWAP)
 
         self.assertEqual(self.window.channel_label_inputs[0].text(), "Freigabe")
@@ -128,6 +138,9 @@ class PlanIoTests(unittest.TestCase):
         self.window.pt1_p_input.setValue(500)
         self.window.pt1_p_register_input.setValue(2222)
         self.window.pt1_q_register_input.setValue(3333)
+        self.window.remote_host_input.setText("10.0.0.88")
+        self.window.remote_port_input.setValue(4001)
+        self.window.remote_filename_input.setText("FGH_Test_EN_20260414_101010_007.dmd")
         self.window.channel_label_inputs[2].setText("Active Power")
         self.window.start_value_inputs[1].setText("99")
         self.window.row_checkboxes[1].setChecked(True)
@@ -157,6 +170,10 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(connection["pt1_p_ms"], 500)
         self.assertEqual(connection["pt1_p_start_register"], 2222)
         self.assertEqual(connection["pt1_q_start_register"], 3333)
+        self.assertEqual(connection["remote_host"], "10.0.0.88")
+        self.assertEqual(connection["remote_port"], 4001)
+        self.assertEqual(connection["remote_filename"], "FGH_Test_EN_20260414_101010_007.dmd")
+        self.assertTrue(connection["remote_auto_control"])
         self.assertEqual(saved_channels[2][1], "Active Power")
         self.assertEqual(saved_channels[1][4], "99")
         self.assertTrue(saved_rows[1][0])
@@ -188,6 +205,29 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window.modbus_service.connect.call_count, 2)
         self.window.modbus_service.disconnect.assert_called_once()
         self.window._show_retry_dialog.assert_called_once()
+
+    def test_start_can_trigger_remote_measurement(self) -> None:
+        self.window.modbus_service._client = Mock()
+        self.window.modbus_service._settings = ConnectionSettings()
+        self.window.modbus_service.update_runtime_settings = Mock()
+        self.window.sequence_controller.start = Mock()
+        self.window.scpi_service.set_filename = Mock()
+        self.window.scpi_service.start_measurement = Mock()
+        self.window.remote_enabled_checkbox.setChecked(True)
+        self.window.remote_auto_checkbox.setChecked(True)
+        self.window.remote_host_input.setText("192.168.0.10")
+        self.window.remote_port_input.setValue(5025)
+        self.window.remote_filename_input.setText("Bachmann_SPPC_EN_20260325_112003_001.dmd")
+        self.window.row_checkboxes[0].setChecked(True)
+        self.window._set_item_text(0, 2, "1")
+        self.window._set_item_text(0, 6, "5")
+
+        self.window._on_start_clicked()
+
+        self.window.scpi_service.set_filename.assert_called_once()
+        self.window.scpi_service.start_measurement.assert_called_once()
+        self.window.sequence_controller.start.assert_called_once()
+        self.assertTrue(self.window._remote_measurement_running)
 
 
 if __name__ == "__main__":

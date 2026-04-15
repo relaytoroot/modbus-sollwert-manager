@@ -37,6 +37,7 @@ from .models import (
     ChannelConfig,
     ChannelWrite,
     ConnectionSettings,
+    RemoteConnectionSettings,
     RegisterFormat,
     RegisterValueType,
     StageExecution,
@@ -52,11 +53,20 @@ from .app_info import (
     APP_COMPANY,
     APP_NAME,
     APP_VERSION,
+    CHECKBOX_CHECK_DARK_THEME_FILE,
+    CHECKBOX_CHECK_LIGHT_THEME_FILE,
+    COMBO_ARROW_DARK_THEME_FILE,
+    COMBO_ARROW_LIGHT_THEME_FILE,
     HEADER_LOGO_FILE,
     ICON_FILE,
+    SPIN_ARROW_DOWN_DARK_THEME_FILE,
+    SPIN_ARROW_DOWN_LIGHT_THEME_FILE,
+    SPIN_ARROW_UP_DARK_THEME_FILE,
+    SPIN_ARROW_UP_LIGHT_THEME_FILE,
     resource_path,
 )
 from .sequence_controller import SequenceController
+from .scpi_service import ScpiService
 from .value_encoder import ValueEncoder, ValueEncodingError
 
 
@@ -130,10 +140,14 @@ class ModbusMainWindow(QMainWindow):
             "border": "#d4dde6",
             "button_bg": "#f6f8fb",
             "button_hover": "#eef3f7",
+            "button_pressed": "#e1e9f1",
             "button_disabled_bg": "#eef2f5",
             "button_disabled_text": "#96a1ac",
             "input_bg": "#ffffff",
             "input_border": "#cad5df",
+            "focus_ring": "#8fb2cf",
+            "control_surface": "#edf2f7",
+            "control_surface_hover": "#e2eaf2",
             "table_bg": "#ffffff",
             "table_alt_bg": "#f7f9fb",
             "table_grid": "#e4e9ef",
@@ -156,36 +170,40 @@ class ModbusMainWindow(QMainWindow):
             },
         },
         "dark": {
-            "window_bg": "#1f252c",
-            "text_primary": "#e6edf3",
-            "text_secondary": "#a9b5c1",
-            "group_bg": "#28303a",
-            "border": "#3b4652",
-            "button_bg": "#313b46",
-            "button_hover": "#394652",
+            "window_bg": "#1b2128",
+            "text_primary": "#f1f5f9",
+            "text_secondary": "#b5c0cb",
+            "group_bg": "#252d36",
+            "border": "#516171",
+            "button_bg": "#415161",
+            "button_hover": "#4e6276",
+            "button_pressed": "#5c748d",
             "button_disabled_bg": "#2b333d",
-            "button_disabled_text": "#7e8a97",
-            "input_bg": "#202830",
-            "input_border": "#44505d",
-            "table_bg": "#242c34",
-            "table_alt_bg": "#20272f",
-            "table_grid": "#37414c",
-            "table_header_bg": "#313b46",
-            "table_selection_bg": "#35516b",
-            "table_selection_text": "#f2f7fb",
-            "default_row_bg": "#28303a",
-            "inactive_row_bg": "#232a33",
-            "active_row_bg": "#344658",
-            "active_row_text": "#f1f6fb",
-            "inactive_row_text": "#95a3b1",
-            "author_text": "#94a3b0",
+            "button_disabled_text": "#8b97a4",
+            "input_bg": "#1f2730",
+            "input_border": "#70859a",
+            "focus_ring": "#97bddc",
+            "control_surface": "#4b5d71",
+            "control_surface_hover": "#5b7087",
+            "table_bg": "#222932",
+            "table_alt_bg": "#1d242c",
+            "table_grid": "#3f4b57",
+            "table_header_bg": "#33404d",
+            "table_selection_bg": "#496a89",
+            "table_selection_text": "#f5f8fb",
+            "default_row_bg": "#252d36",
+            "inactive_row_bg": "#202730",
+            "active_row_bg": "#38516a",
+            "active_row_text": "#f6f9fc",
+            "inactive_row_text": "#9eacba",
+            "author_text": "#9aa9b8",
             "status_styles": {
-                STATUS_DISCONNECTED: "background:#3a4754;color:#e7edf2;",
-                STATUS_CONNECTED: "background:#2f5644;color:#e8f4ed;",
-                STATUS_RUNNING: "background:#6a5324;color:#fff4db;",
-                STATUS_PAUSED: "background:#3d5266;color:#eef5fb;",
-                STATUS_ERROR: "background:#6a3734;color:#ffe9e7;",
-                STATUS_FINISHED: "background:#31506a;color:#e7f3fb;",
+                STATUS_DISCONNECTED: "background:#465565;color:#edf3f8;",
+                STATUS_CONNECTED: "background:#2f6448;color:#eef8f2;",
+                STATUS_RUNNING: "background:#7b632a;color:#fff5dd;",
+                STATUS_PAUSED: "background:#476279;color:#eef6fc;",
+                STATUS_ERROR: "background:#7a3f3b;color:#ffefed;",
+                STATUS_FINISHED: "background:#35607d;color:#edf7ff;",
             },
         },
     }
@@ -204,11 +222,14 @@ class ModbusMainWindow(QMainWindow):
         self.header_logo_path = resource_path(HEADER_LOGO_FILE)
 
         self.modbus_service = ModbusService()
+        self.scpi_service = ScpiService()
         self.sequence_controller = SequenceController(self.modbus_service, self)
         self.keepalive_timer = QTimer(self)
         self.keepalive_timer.timeout.connect(self._on_keepalive_tick)
         self.current_file_path: Path | None = None
         self._has_unsaved_changes = False
+        self._remote_measurement_running = False
+        self._remote_state_text = "Aus"
         self.row_checkboxes: list[QCheckBox] = []
         self.register_inputs: list[QSpinBox] = []
         self.channel_label_inputs: list[QLineEdit] = []
@@ -303,6 +324,29 @@ class ModbusMainWindow(QMainWindow):
         self.next_stage_button.setEnabled(False)
         self.stop_button.setEnabled(False)
         self.copy_stage_time_button.setEnabled(False)
+        self.remote_enabled_checkbox = QCheckBox("Remote aktiv")
+        self.remote_auto_checkbox = QCheckBox("Mit Test koppeln")
+        self.remote_auto_checkbox.setChecked(True)
+        self.remote_host_input = QLineEdit("127.0.0.1")
+        self.remote_port_input = QSpinBox()
+        self.remote_port_input.setRange(1, 65535)
+        self.remote_port_input.setValue(5025)
+        self.remote_port_input.setMaximumWidth(90)
+        self.remote_filename_input = QLineEdit()
+        self.remote_filename_input.setPlaceholderText("Hersteller_Produkt_Norm_YYYYMMDD_HHMMSS_001.dmd")
+        self.remote_filename_input.setToolTip(
+            "Beispiel: Bachmann_SPPC_EN_20260325_112003_001.dmd\n"
+            "Die laufende Nummer am Ende sollte fuer jede Messdatei eindeutig sein."
+        )
+        self.remote_set_filename_button = QPushButton("Dateiname setzen")
+        self.remote_start_button = QPushButton("Messung starten")
+        self.remote_stop_button = QPushButton("Messung stoppen")
+        self.remote_status_value = QLabel("Aus")
+        self.remote_status_value.setAlignment(Qt.AlignCenter)
+        self.remote_status_value.setMinimumWidth(96)
+        self.remote_start_button.setMaximumWidth(150)
+        self.remote_stop_button.setMaximumWidth(150)
+        self.remote_set_filename_button.setMaximumWidth(150)
 
         self.logo_label = QLabel()
         self._configure_logo()
@@ -358,6 +402,7 @@ class ModbusMainWindow(QMainWindow):
         top_cards.addWidget(self._build_control_group(), 3)
         root.addLayout(top_cards)
         root.addWidget(self._build_channel_group())
+        root.addWidget(self._build_remote_group())
 
         self.main_splitter = QSplitter(Qt.Vertical)
         self.main_splitter.addWidget(self._build_table_group())
@@ -490,6 +535,28 @@ class ModbusMainWindow(QMainWindow):
         layout.addWidget(self.test_table)
         return group
 
+    def _build_remote_group(self) -> QGroupBox:
+        group = QGroupBox("Remote Messung (SCPI)")
+        group.setMaximumHeight(120)
+        layout = QGridLayout(group)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(8)
+        layout.addWidget(self.remote_enabled_checkbox, 0, 0)
+        layout.addWidget(QLabel("IP-Adresse"), 0, 1)
+        layout.addWidget(self.remote_host_input, 0, 2)
+        layout.addWidget(QLabel("Port"), 0, 3)
+        layout.addWidget(self.remote_port_input, 0, 4)
+        layout.addWidget(self.remote_auto_checkbox, 0, 5)
+        layout.addWidget(QLabel("Status"), 0, 6)
+        layout.addWidget(self.remote_status_value, 0, 7)
+        layout.addWidget(QLabel("Messdatei"), 1, 0)
+        layout.addWidget(self.remote_filename_input, 1, 1, 1, 4)
+        layout.addWidget(self.remote_set_filename_button, 1, 5)
+        layout.addWidget(self.remote_start_button, 1, 6)
+        layout.addWidget(self.remote_stop_button, 1, 7)
+        layout.setColumnStretch(2, 1)
+        return group
+
     def _build_log_group(self) -> QGroupBox:
         group = QGroupBox("Ereignisprotokoll")
         layout = QVBoxLayout(group)
@@ -523,9 +590,11 @@ class ModbusMainWindow(QMainWindow):
 
     def _apply_styles(self) -> None:
         self.status_badge.setObjectName("statusBadge")
+        self.remote_status_value.setObjectName("remoteStatusBadge")
         self.author_label.setObjectName("authorLabel")
         self.copy_stage_time_button.setObjectName("secondaryButton")
         self.next_stage_button.setObjectName("secondaryButton")
+        self.remote_set_filename_button.setObjectName("secondaryButton")
         self._apply_theme(self.current_theme)
 
     def _apply_theme(self, theme_name: str) -> None:
@@ -536,6 +605,18 @@ class ModbusMainWindow(QMainWindow):
         self.active_stage_color = QColor(theme["active_row_bg"])
         self.active_row_text_color = QColor(theme["active_row_text"])
         self.inactive_row_text_color = QColor(theme["inactive_row_text"])
+        combo_arrow = resource_path(
+            COMBO_ARROW_DARK_THEME_FILE if self.current_theme == "dark" else COMBO_ARROW_LIGHT_THEME_FILE
+        ).as_posix()
+        spin_up_arrow = resource_path(
+            SPIN_ARROW_UP_DARK_THEME_FILE if self.current_theme == "dark" else SPIN_ARROW_UP_LIGHT_THEME_FILE
+        ).as_posix()
+        spin_down_arrow = resource_path(
+            SPIN_ARROW_DOWN_DARK_THEME_FILE if self.current_theme == "dark" else SPIN_ARROW_DOWN_LIGHT_THEME_FILE
+        ).as_posix()
+        checkbox_check = resource_path(
+            CHECKBOX_CHECK_DARK_THEME_FILE if self.current_theme == "dark" else CHECKBOX_CHECK_LIGHT_THEME_FILE
+        ).as_posix()
 
         self.setStyleSheet(
             f"""
@@ -560,15 +641,22 @@ class ModbusMainWindow(QMainWindow):
                 left: 12px;
                 padding: 0 6px;
             }}
+            QLabel {{
+                color: {theme["text_primary"]};
+            }}
             QPushButton {{
                 min-height: 34px;
                 border-radius: 8px;
                 border: 1px solid {theme["input_border"]};
                 padding: 0 14px;
                 background: {theme["button_bg"]};
+                color: {theme["text_primary"]};
             }}
             QPushButton:hover {{
                 background: {theme["button_hover"]};
+            }}
+            QPushButton:pressed {{
+                background: {theme["button_pressed"]};
             }}
             QPushButton:disabled {{
                 color: {theme["button_disabled_text"]};
@@ -582,6 +670,92 @@ class ModbusMainWindow(QMainWindow):
                 color: {theme["text_primary"]};
                 selection-background-color: {theme["table_selection_bg"]};
                 selection-color: {theme["table_selection_text"]};
+            }}
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus, QPushButton:focus {{
+                border: 1px solid {theme["focus_ring"]};
+            }}
+            QComboBox {{
+                padding-right: 30px;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 26px;
+                border-left: 1px solid {theme["input_border"]};
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+                background: {theme["control_surface"]};
+            }}
+            QComboBox::drop-down:hover {{
+                background: {theme["control_surface_hover"]};
+            }}
+            QComboBox::down-arrow {{
+                image: url("{combo_arrow}");
+                width: 14px;
+                height: 14px;
+            }}
+            QComboBox QAbstractItemView {{
+                border: 1px solid {theme["input_border"]};
+                background: {theme["input_bg"]};
+                color: {theme["text_primary"]};
+                selection-background-color: {theme["table_selection_bg"]};
+                selection-color: {theme["table_selection_text"]};
+            }}
+            QSpinBox {{
+                padding-right: 34px;
+            }}
+            QSpinBox::up-button, QSpinBox::down-button {{
+                width: 20px;
+                background: {theme["control_surface"]};
+                border-left: 1px solid {theme["input_border"]};
+            }}
+            QSpinBox::up-button {{
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+                border-top-right-radius: 8px;
+                border-bottom: 1px solid {theme["input_border"]};
+            }}
+            QSpinBox::down-button {{
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+                border-bottom-right-radius: 8px;
+            }}
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+                background: {theme["control_surface_hover"]};
+            }}
+            QSpinBox::up-arrow, QSpinBox::down-arrow {{
+                width: 12px;
+                height: 12px;
+            }}
+            QSpinBox::up-arrow {{
+                image: url("{spin_up_arrow}");
+            }}
+            QSpinBox::down-arrow {{
+                image: url("{spin_down_arrow}");
+            }}
+            QCheckBox {{
+                spacing: 8px;
+                color: {theme["text_primary"]};
+                background: transparent;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border-radius: 4px;
+                border: 1px solid {theme["input_border"]};
+                background: {theme["input_bg"]};
+            }}
+            QCheckBox::indicator:hover {{
+                background: {theme["control_surface"]};
+                border: 1px solid {theme["focus_ring"]};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {theme["button_pressed"]};
+                border: 1px solid {theme["focus_ring"]};
+                image: url("{checkbox_check}");
+            }}
+            QSplitter::handle {{
+                background: {theme["border"]};
             }}
             QTableWidget {{
                 border: 1px solid {theme["border"]};
@@ -615,6 +789,14 @@ class ModbusMainWindow(QMainWindow):
                 padding: 8px 12px;
                 font-weight: 700;
             }}
+            QLabel#remoteStatusBadge {{
+                border-radius: 10px;
+                padding: 6px 10px;
+                font-weight: 600;
+                border: 1px solid {theme["input_border"]};
+                background: {theme["control_surface"]};
+                color: {theme["text_primary"]};
+            }}
             QPushButton#secondaryButton {{
                 padding: 0 10px;
             }}
@@ -627,6 +809,7 @@ class ModbusMainWindow(QMainWindow):
             """
         )
         self._set_status(self.current_status_key, self.current_status_text)
+        self._update_remote_controls()
         self._apply_row_visuals()
 
     def _connect_signals(self) -> None:
@@ -639,6 +822,11 @@ class ModbusMainWindow(QMainWindow):
         self.save_button.clicked.connect(self._on_save_clicked)
         self.load_button.clicked.connect(self._on_load_clicked)
         self.copy_stage_time_button.clicked.connect(self._copy_first_stage_time_to_active_rows)
+        self.remote_enabled_checkbox.toggled.connect(self._on_remote_settings_changed)
+        self.remote_auto_checkbox.toggled.connect(self._on_remote_settings_changed)
+        self.remote_set_filename_button.clicked.connect(self._on_remote_set_filename_clicked)
+        self.remote_start_button.clicked.connect(self._on_remote_start_clicked)
+        self.remote_stop_button.clicked.connect(self._on_remote_stop_clicked)
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
         self.keepalive_input.valueChanged.connect(self._update_keepalive_timer_interval)
         self.test_table.itemChanged.connect(self._on_table_item_changed)
@@ -664,6 +852,9 @@ class ModbusMainWindow(QMainWindow):
         self.pt1_q_input.valueChanged.connect(self._mark_dirty)
         self.pt1_p_register_input.valueChanged.connect(self._mark_dirty)
         self.pt1_q_register_input.valueChanged.connect(self._mark_dirty)
+        self.remote_host_input.textChanged.connect(self._on_remote_settings_changed)
+        self.remote_port_input.valueChanged.connect(self._on_remote_settings_changed)
+        self.remote_filename_input.textChanged.connect(self._on_remote_settings_changed)
 
     def _configure_table(self) -> None:
         self._update_table_headers()
@@ -706,6 +897,15 @@ class ModbusMainWindow(QMainWindow):
             slave_id=self.slave_id_input.value(),
             register_format=self.register_format_combo.currentData(),
             keepalive_interval_seconds=self.keepalive_input.value(),
+        )
+
+    def _current_remote_settings(self) -> RemoteConnectionSettings:
+        return RemoteConnectionSettings(
+            enabled=self.remote_enabled_checkbox.isChecked(),
+            auto_control=self.remote_auto_checkbox.isChecked(),
+            host=self.remote_host_input.text().strip() or "127.0.0.1",
+            port=self.remote_port_input.value(),
+            filename=self.remote_filename_input.text().strip(),
         )
 
     def _channel_configs(self) -> list[ChannelConfig]:
@@ -833,6 +1033,7 @@ class ModbusMainWindow(QMainWindow):
 
     def _on_disconnect_clicked(self) -> None:
         self.sequence_controller.stop()
+        self._stop_remote_measurement("Remote-Messung bei Trennen gestoppt.", show_dialog_on_error=False)
         self._stop_keepalive_timer()
         self.modbus_service.disconnect()
         self._set_connection_widgets(False)
@@ -855,9 +1056,20 @@ class ModbusMainWindow(QMainWindow):
             return
         self.modbus_service.update_runtime_settings(self._current_settings())
         self._update_keepalive_timer_interval()
+        remote_started = False
+        remote_settings = self._current_remote_settings()
+        if remote_settings.enabled and remote_settings.auto_control:
+            try:
+                self._start_remote_measurement(remote_settings, source_label="Teststart")
+                remote_started = True
+            except Exception as exc:
+                self._show_error("Remote-Messung fehlgeschlagen", str(exc))
+                return
         try:
             self.sequence_controller.start(plan)
         except Exception as exc:
+            if remote_started:
+                self._stop_remote_measurement("Remote-Messung wegen Teststart-Fehler gestoppt.", show_dialog_on_error=False)
             self._set_status(STATUS_ERROR, "Fehler")
             self._show_error("Teststart fehlgeschlagen", str(exc))
             return
@@ -883,6 +1095,7 @@ class ModbusMainWindow(QMainWindow):
 
     def _on_stop_clicked(self) -> None:
         self.sequence_controller.stop()
+        self._stop_remote_measurement("Remote-Messung manuell gestoppt.", show_dialog_on_error=False)
         self._set_running_widgets(False)
         if self.modbus_service.is_connected:
             self._set_status(STATUS_CONNECTED, "Bereit")
@@ -950,6 +1163,11 @@ class ModbusMainWindow(QMainWindow):
         sheet_connection.append(["pt1_p_start_register", self.pt1_p_register_input.value()])
         sheet_connection.append(["pt1_q_ms", self.pt1_q_input.value()])
         sheet_connection.append(["pt1_q_start_register", self.pt1_q_register_input.value()])
+        sheet_connection.append(["remote_enabled", self.remote_enabled_checkbox.isChecked()])
+        sheet_connection.append(["remote_auto_control", self.remote_auto_checkbox.isChecked()])
+        sheet_connection.append(["remote_host", self.remote_host_input.text().strip() or "127.0.0.1"])
+        sheet_connection.append(["remote_port", self.remote_port_input.value()])
+        sheet_connection.append(["remote_filename", self.remote_filename_input.text().strip()])
 
         sheet_channels = workbook.create_sheet("Kanaele")
         sheet_channels.append(["name", "label", "start_register", "value_type", "start_value"])
@@ -1002,6 +1220,13 @@ class ModbusMainWindow(QMainWindow):
         self.pt1_p_register_input.setValue(int(connection.get("pt1_p_start_register", 0)))
         self.pt1_q_input.setValue(int(connection.get("pt1_q_ms", 0)))
         self.pt1_q_register_input.setValue(int(connection.get("pt1_q_start_register", 0)))
+        self.remote_enabled_checkbox.setChecked(self._coerce_bool(connection.get("remote_enabled", False)))
+        self.remote_auto_checkbox.setChecked(
+            self._coerce_bool(connection.get("remote_auto_control", connection.get("remote_auto_recording", True)), default=True)
+        )
+        self.remote_host_input.setText(str(connection.get("remote_host", "127.0.0.1")))
+        self.remote_port_input.setValue(int(connection.get("remote_port", 5025)))
+        self.remote_filename_input.setText("" if connection.get("remote_filename") is None else str(connection.get("remote_filename", "")))
 
         if "register_format" in connection:
             register_format_value = connection.get("register_format", RegisterFormat.BIG.value)
@@ -1076,6 +1301,7 @@ class ModbusMainWindow(QMainWindow):
             self._set_item_text(row, self.COLUMN_DURATION, str(row_data.get("duration", "")))
         self.test_table.blockSignals(False)
         self._update_time_copy_button()
+        self._update_remote_controls()
         self._apply_row_visuals()
         self._refresh_summary()
 
@@ -1087,6 +1313,17 @@ class ModbusMainWindow(QMainWindow):
             if data == raw_value or normalized_data == normalized_raw or str(normalized_data) == str(normalized_raw):
                 combo.setCurrentIndex(index)
                 return
+
+    def _coerce_bool(self, raw_value: object, default: bool = False) -> bool:
+        if raw_value is None:
+            return default
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip().lower()
+            if normalized in {"1", "true", "yes", "ja", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "nein", "off"}:
+                return False
+        return bool(raw_value)
 
     def _item_text(self, row: int, column: int) -> str:
         item = self.test_table.item(row, column)
@@ -1217,6 +1454,7 @@ class ModbusMainWindow(QMainWindow):
         self.register_format_combo.setEnabled(not connected)
         self.keepalive_input.setEnabled(not connected)
         self._update_manual_write_buttons()
+        self._update_remote_controls()
 
     def _set_running_widgets(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
@@ -1237,6 +1475,7 @@ class ModbusMainWindow(QMainWindow):
             pt1_input.setEnabled(not running)
         self.disconnect_button.setEnabled(not running and self.modbus_service.is_connected)
         self._update_manual_write_buttons()
+        self._update_remote_controls()
         self._update_time_copy_button()
         self._update_pause_button()
         self._apply_row_visuals()
@@ -1256,12 +1495,115 @@ class ModbusMainWindow(QMainWindow):
         for button in self.send_value_buttons:
             button.setEnabled(manual_write_enabled)
 
+    def _update_remote_controls(self) -> None:
+        settings = self._current_remote_settings()
+        remote_enabled = settings.enabled
+        config_enabled = remote_enabled and not self.sequence_controller.has_active_plan
+        self.remote_enabled_checkbox.setEnabled(
+            not self.sequence_controller.has_active_plan and not self._remote_measurement_running
+        )
+        for widget in (
+            self.remote_host_input,
+            self.remote_port_input,
+            self.remote_filename_input,
+            self.remote_auto_checkbox,
+        ):
+            widget.setEnabled(config_enabled)
+        self.remote_set_filename_button.setEnabled(config_enabled and bool(settings.filename))
+        self.remote_start_button.setEnabled(config_enabled and bool(settings.filename))
+        self.remote_stop_button.setEnabled(remote_enabled and self._remote_measurement_running)
+        if not remote_enabled:
+            self._remote_state_text = "Aus"
+            self.remote_status_value.setText(self._remote_state_text)
+            return
+        self.remote_status_value.setText(self._remote_state_text)
+
+    def _on_remote_settings_changed(self) -> None:
+        if not self.remote_enabled_checkbox.isChecked():
+            self._remote_measurement_running = False
+            self._remote_state_text = "Aus"
+        self._mark_dirty()
+        self._update_remote_controls()
+
     def _update_time_copy_button(self) -> None:
         has_source_time = bool(self._item_text(0, self.COLUMN_DURATION))
         has_target_rows = any(self.row_checkboxes[row].isChecked() for row in range(1, self.test_table.rowCount()))
         self.copy_stage_time_button.setEnabled(
             has_source_time and has_target_rows and not self.sequence_controller.has_active_plan
         )
+
+    def _on_remote_set_filename_clicked(self) -> None:
+        settings = self._current_remote_settings()
+        if not settings.enabled:
+            self._show_error("Remote nicht aktiv", "Bitte die Remote-Verbindung zuerst aktivieren.")
+            return
+        try:
+            self.scpi_service.set_filename(settings)
+        except Exception as exc:
+            self._remote_state_text = "Fehler"
+            self.remote_status_value.setText(self._remote_state_text)
+            self._show_error("Remote-Dateiname fehlgeschlagen", str(exc))
+            return
+        self._remote_state_text = "Bereit"
+        self.remote_status_value.setText(self._remote_state_text)
+        self.last_write_value.setText("Remote-Dateiname gesetzt")
+        self._append_log(
+            f"SCPI Dateiname gesetzt: {settings.filename} auf {settings.host}:{settings.port}."
+        )
+        self._update_remote_controls()
+
+    def _on_remote_start_clicked(self) -> None:
+        settings = self._current_remote_settings()
+        if not settings.enabled:
+            self._show_error("Remote nicht aktiv", "Bitte die Remote-Verbindung zuerst aktivieren.")
+            return
+        try:
+            self._start_remote_measurement(settings, source_label="Manueller Start")
+        except Exception as exc:
+            self._remote_state_text = "Fehler"
+            self.remote_status_value.setText(self._remote_state_text)
+            self._show_error("Remote-Messung fehlgeschlagen", str(exc))
+            return
+        self.last_write_value.setText("Remote-Messung gestartet")
+        self._update_remote_controls()
+
+    def _on_remote_stop_clicked(self) -> None:
+        if not self._remote_measurement_running:
+            return
+        self._stop_remote_measurement("Remote-Messung manuell gestoppt.", show_dialog_on_error=True)
+        self.last_write_value.setText("Remote-Messung gestoppt")
+        self._update_remote_controls()
+
+    def _start_remote_measurement(self, settings: RemoteConnectionSettings, source_label: str) -> None:
+        self.scpi_service.set_filename(settings)
+        self.scpi_service.start_measurement(settings)
+        self._remote_measurement_running = True
+        self._remote_state_text = "Laeuft"
+        self.remote_status_value.setText(self._remote_state_text)
+        self._append_log(
+            f"SCPI {source_label}: Dateiname gesetzt und Messung gestartet auf {settings.host}:{settings.port}."
+        )
+        self._update_remote_controls()
+
+    def _stop_remote_measurement(self, success_message: str, show_dialog_on_error: bool) -> None:
+        if not self._remote_measurement_running:
+            self._update_remote_controls()
+            return
+        settings = self._current_remote_settings()
+        try:
+            self.scpi_service.stop_measurement(settings)
+        except Exception as exc:
+            self._remote_state_text = "Fehler"
+            self.remote_status_value.setText(self._remote_state_text)
+            self._append_log(f"SCPI Stop fehlgeschlagen: {exc}")
+            if show_dialog_on_error:
+                self._show_error("Remote-Stopp fehlgeschlagen", str(exc))
+            return
+        self._remote_measurement_running = False
+        self._remote_state_text = "Bereit"
+        self.remote_status_value.setText(self._remote_state_text)
+        self._append_log(success_message)
+        self._update_remote_controls()
 
     def _set_status(self, status: str, text: str) -> None:
         self.current_status_key = status
@@ -1286,11 +1628,13 @@ class ModbusMainWindow(QMainWindow):
         self.stage_remaining_value.setText(self._format_seconds(stage_remaining))
 
     def _on_sequence_finished(self) -> None:
+        self._stop_remote_measurement("Remote-Messung abgeschlossen.", show_dialog_on_error=False)
         self._set_running_widgets(False)
         self.last_write_value.setText("Testplan abgeschlossen")
         self._highlight_current_row(-1)
 
     def _on_sequence_error(self, message: str) -> None:
+        self._stop_remote_measurement("Remote-Messung nach Testfehler gestoppt.", show_dialog_on_error=False)
         self._set_running_widgets(False)
         self.last_write_value.setText(message)
         self._show_error("Testlauf fehlgeschlagen", message)
@@ -1341,6 +1685,7 @@ class ModbusMainWindow(QMainWindow):
             return
         self.keepalive_timer.stop()
         self.sequence_controller.stop()
+        self._stop_remote_measurement("Remote-Messung beim Schliessen gestoppt.", show_dialog_on_error=False)
         self.modbus_service.disconnect()
         super().closeEvent(event)
 

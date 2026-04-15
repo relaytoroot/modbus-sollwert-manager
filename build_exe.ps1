@@ -28,6 +28,14 @@ Write-Host "Baue FGH Modbus Sollwert Manager..."
     --specpath $pyiSpecDir `
     --add-data "$($projectRoot)\FGH_Logo_prüflabor_gruen.ico;." `
     --add-data "$($projectRoot)\FGH_Logo_gruen.ico;." `
+    --add-data "$($projectRoot)\combo_arrow_dark.svg;." `
+    --add-data "$($projectRoot)\combo_arrow_light.svg;." `
+    --add-data "$($projectRoot)\spin_arrow_up_dark.svg;." `
+    --add-data "$($projectRoot)\spin_arrow_up_light.svg;." `
+    --add-data "$($projectRoot)\spin_arrow_down_dark.svg;." `
+    --add-data "$($projectRoot)\spin_arrow_down_light.svg;." `
+    --add-data "$($projectRoot)\checkbox_check_dark.svg;." `
+    --add-data "$($projectRoot)\checkbox_check_light.svg;." `
     $entryScript
 
 if ($LASTEXITCODE -ne 0) {
