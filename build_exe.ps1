@@ -6,16 +6,20 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $distDir = Join-Path $projectRoot "dist"
-$buildDir = Join-Path $projectRoot "build"
-$pyiDistDir = Join-Path $distDir "pyinstaller_dist"
-$pyiWorkDir = Join-Path $buildDir "pyinstaller_work"
-$pyiSpecDir = Join-Path $buildDir "pyinstaller_spec"
+$tempBuildRoot = Join-Path $env:TEMP ("FGH_Modbus_Sollwert_Manager_" + [DateTime]::Now.ToString("yyyyMMdd_HHmmss"))
+$pyiDistDir = Join-Path $tempBuildRoot "pyinstaller_dist"
+$pyiWorkDir = Join-Path $tempBuildRoot "pyinstaller_work"
+$pyiSpecDir = Join-Path $tempBuildRoot "pyinstaller_spec"
 $legacyReleaseDir = Join-Path $distDir "Release_FGH_MSC"
-$releaseDir = Join-Path $distDir "Release_FGH_Modbus_Sollwert_Manager"
+$releaseDir = Join-Path $distDir "Abgabe_FGH_Modbus_Sollwert_Manager"
+$zipPath = Join-Path $distDir "Abgabe_FGH_Modbus_Sollwert_Manager.zip"
 $exeName = "FGH_Modbus_Sollwert_Manager"
 $entryScript = Join-Path $projectRoot "start_modbus_sollwert_manager.py"
 
 Write-Host "Baue FGH Modbus Sollwert Manager..."
+
+New-Item -ItemType Directory -Path $pyiWorkDir -Force | Out-Null
+New-Item -ItemType Directory -Path $pyiSpecDir -Force | Out-Null
 
 & $PythonExe -m PyInstaller `
     --noconfirm `
@@ -42,10 +46,12 @@ if (Test-Path $releaseDir) {
     Remove-Item $releaseDir -Recurse -Force
 }
 
+if (Test-Path $zipPath) {
+    Remove-Item $zipPath -Force
+}
+
 New-Item -ItemType Directory -Path $releaseDir | Out-Null
 Copy-Item (Join-Path $pyiDistDir "$exeName\*") $releaseDir -Recurse
-Copy-Item (Join-Path $projectRoot "README.md") $releaseDir
-Copy-Item (Join-Path $projectRoot "UEBERGABE_MODBUS.md") $releaseDir
 
 $docsTarget = Join-Path $releaseDir "Dokumentation"
 New-Item -ItemType Directory -Path $docsTarget | Out-Null
@@ -57,5 +63,12 @@ Copy-Item (Join-Path $projectRoot "tests\fixtures\sample_plan.xlsx") (Join-Path 
 
 Copy-Item (Join-Path $projectRoot "Start_FGH_Modbus_Sollwert_Manager.bat") $releaseDir
 
+Compress-Archive -Path $releaseDir -DestinationPath $zipPath
+
+if (Test-Path $tempBuildRoot) {
+    Remove-Item $tempBuildRoot -Recurse -Force
+}
+
 Write-Host "Fertig. Release-Ordner: $releaseDir"
+Write-Host "ZIP-Datei: $zipPath"
 
