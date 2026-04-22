@@ -93,6 +93,16 @@ class ConnectionSettings:
 
 
 @dataclass(slots=True)
+class ScpiSettings:
+    host: str = "127.0.0.1"
+    port: int = 5025
+    timeout_seconds: float = 2.0
+    write_termination: str = "\n"
+    read_termination: str = "\n"
+    encoding: str = "ascii"
+
+
+@dataclass(slots=True)
 class ChannelConfig:
     name: str
     label: str = ""

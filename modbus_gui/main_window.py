@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -46,6 +47,7 @@ from .models import (
     ConnectionSettings,
     RegisterFormat,
     RegisterValueType,
+    ScpiSettings,
     StageExecution,
     STATUS_CONNECTED,
     STATUS_DISCONNECTED,
@@ -64,6 +66,7 @@ from .app_info import (
     resource_path,
 )
 from .sequence_controller import SequenceController
+from .scpi_service import ScpiService
 from .series_controller import SeriesController
 from .value_encoder import ValueEncoder, ValueEncodingError
 
@@ -219,6 +222,7 @@ class ModbusMainWindow(QMainWindow):
         self.header_logo_path = resource_path(HEADER_LOGO_FILE)
 
         self.modbus_service = ModbusService()
+        self.scpi_service = ScpiService()
         self.sequence_controller = SequenceController(self.modbus_service, self)
         self.series_controller = SeriesController(self._start_automation_job, self)
         self.keepalive_timer = QTimer(self)
@@ -246,6 +250,8 @@ class ModbusMainWindow(QMainWindow):
         self.current_theme = "light"
         self.current_status_key = STATUS_DISCONNECTED
         self.current_status_text = "Getrennt"
+        self.current_scpi_status_key = STATUS_DISCONNECTED
+        self.current_scpi_status_text = "Getrennt"
         self.default_row_color = QColor("#ffffff")
         self.inactive_row_color = QColor("#f1f3f5")
         self.active_stage_color = QColor("#d9ecff")
@@ -263,6 +269,16 @@ class ModbusMainWindow(QMainWindow):
         self.keepalive_input.setRange(1, 3600)
         self.keepalive_input.setSuffix(" s")
         self.keepalive_input.setValue(20)
+        self.scpi_host_input = QLineEdit("127.0.0.1")
+        self.scpi_port_input = QSpinBox()
+        self.scpi_port_input.setRange(1, 65535)
+        self.scpi_port_input.setValue(5025)
+        self.scpi_timeout_input = QDoubleSpinBox()
+        self.scpi_timeout_input.setRange(0.1, 30.0)
+        self.scpi_timeout_input.setDecimals(1)
+        self.scpi_timeout_input.setSingleStep(0.5)
+        self.scpi_timeout_input.setSuffix(" s")
+        self.scpi_timeout_input.setValue(2.0)
 
         self.register_format_combo = QComboBox()
         for register_format in RegisterFormat:
@@ -340,12 +356,32 @@ class ModbusMainWindow(QMainWindow):
         self.status_badge = QLabel("Getrennt")
         self.status_badge.setAlignment(Qt.AlignCenter)
         self.status_badge.setMinimumWidth(120)
+        self.scpi_status_badge = QLabel("Getrennt")
+        self.scpi_status_badge.setAlignment(Qt.AlignCenter)
+        self.scpi_status_badge.setMinimumWidth(120)
         self.current_stage_value = QLabel("-")
         self.stage_remaining_value = QLabel("00:00:00")
         self.total_remaining_value = QLabel("00:00:00")
         self.total_time_value = QLabel("00:00:00")
         self.last_write_value = QLabel("Noch keine Schreibaktion")
         self.address_info = QLabel("Registeradressen sind nullbasiert.")
+        self.scpi_info_label = QLabel("Direkte SCPI-Kommandos fuer Messgeraete und Quellen.")
+        self.scpi_info_label.setWordWrap(True)
+        self.scpi_command_input = QLineEdit()
+        self.scpi_command_input.setPlaceholderText("z. B. *IDN? oder MEAS:VOLT?")
+        self.scpi_connect_button = QPushButton("Verbinden")
+        self.scpi_disconnect_button = QPushButton("Trennen")
+        self.scpi_send_button = QPushButton("Senden")
+        self.scpi_query_button = QPushButton("Abfragen")
+        self.scpi_idn_button = QPushButton("*IDN?")
+        self.scpi_disconnect_button.setEnabled(False)
+        self.scpi_send_button.setEnabled(False)
+        self.scpi_query_button.setEnabled(False)
+        self.scpi_idn_button.setEnabled(False)
+        self.scpi_response_panel = QPlainTextEdit()
+        self.scpi_response_panel.setReadOnly(True)
+        self.scpi_response_panel.setMaximumBlockCount(500)
+        self.scpi_response_panel.setMinimumHeight(240)
 
         self.log_panel = QPlainTextEdit()
         self.log_panel.setReadOnly(True)
@@ -399,6 +435,7 @@ class ModbusMainWindow(QMainWindow):
         self._update_automation_buttons()
         self._refresh_automation_result_panel()
         self._update_manual_write_buttons()
+        self._update_scpi_buttons()
         self._append_log("Anwendung gestartet. Bitte Verbindung pruefen und Testplan laden oder erstellen.")
 
     def _build_ui(self) -> None:
@@ -421,6 +458,7 @@ class ModbusMainWindow(QMainWindow):
         self.workspace_tabs.addTab(self._build_testplan_tab(), "Testplan")
         self.workspace_tabs.addTab(self._build_channel_tab(), "Kanaele")
         self.workspace_tabs.addTab(self._build_automation_tab(), "Automatisierung")
+        self.workspace_tabs.addTab(self._build_scpi_tab(), "SCPI")
         self.workspace_tabs.addTab(self._build_log_tab(), "Protokoll")
         return self.workspace_tabs
 
@@ -467,6 +505,15 @@ class ModbusMainWindow(QMainWindow):
         self.automation_splitter.setStretchFactor(1, 1)
         self.automation_splitter.setSizes([980, 360])
         layout.addWidget(self.automation_splitter, 1)
+        return tab
+
+    def _build_scpi_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 10, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(self._build_scpi_connection_group())
+        layout.addWidget(self._build_scpi_console_group(), 1)
         return tab
 
     def _build_automation_overview_group(self) -> QGroupBox:
@@ -537,6 +584,47 @@ class ModbusMainWindow(QMainWindow):
         info_text.setWordWrap(True)
         info_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         layout.addWidget(info_text)
+        return group
+
+    def _build_scpi_connection_group(self) -> QGroupBox:
+        group = QGroupBox("SCPI-Verbindung")
+        layout = QGridLayout(group)
+
+        form = QFormLayout()
+        form.addRow("IP-Adresse", self.scpi_host_input)
+        form.addRow("Port", self.scpi_port_input)
+        form.addRow("Timeout", self.scpi_timeout_input)
+        layout.addLayout(form, 0, 0, 2, 1)
+
+        button_col = QVBoxLayout()
+        button_col.addWidget(self.scpi_connect_button)
+        button_col.addWidget(self.scpi_disconnect_button)
+        button_col.addStretch(1)
+        layout.addLayout(button_col, 0, 1)
+
+        status_col = QVBoxLayout()
+        status_col.addWidget(QLabel("Status"))
+        status_col.addWidget(self.scpi_status_badge)
+        status_col.addWidget(self.scpi_info_label)
+        status_col.addStretch(1)
+        layout.addLayout(status_col, 0, 2)
+        layout.setColumnStretch(0, 1)
+        return group
+
+    def _build_scpi_console_group(self) -> QGroupBox:
+        group = QGroupBox("SCPI-Konsole")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+
+        command_row = QHBoxLayout()
+        command_row.addWidget(QLabel("Kommando"))
+        command_row.addWidget(self.scpi_command_input, 1)
+        command_row.addWidget(self.scpi_send_button)
+        command_row.addWidget(self.scpi_query_button)
+        command_row.addWidget(self.scpi_idn_button)
+
+        layout.addLayout(command_row)
+        layout.addWidget(self.scpi_response_panel, 1)
         return group
 
     def _build_log_tab(self) -> QWidget:
@@ -701,6 +789,7 @@ class ModbusMainWindow(QMainWindow):
 
     def _apply_styles(self) -> None:
         self.status_badge.setObjectName("statusBadge")
+        self.scpi_status_badge.setObjectName("statusBadge")
         self.author_label.setObjectName("authorLabel")
         self.copy_stage_time_button.setObjectName("secondaryButton")
         self.next_stage_button.setObjectName("secondaryButton")
@@ -779,7 +868,7 @@ class ModbusMainWindow(QMainWindow):
                 color: {theme["button_disabled_text"]};
                 background: {theme["button_disabled_bg"]};
             }}
-            QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit {{
                 border: 1px solid {theme["input_border"]};
                 border-radius: 8px;
                 padding: 6px 8px;
@@ -832,11 +921,17 @@ class ModbusMainWindow(QMainWindow):
             """
         )
         self._set_status(self.current_status_key, self.current_status_text)
+        self._set_scpi_status(self.current_scpi_status_key, self.current_scpi_status_text)
         self._apply_row_visuals()
 
     def _connect_signals(self) -> None:
         self.connect_button.clicked.connect(self._on_connect_clicked)
         self.disconnect_button.clicked.connect(self._on_disconnect_clicked)
+        self.scpi_connect_button.clicked.connect(self._on_scpi_connect_clicked)
+        self.scpi_disconnect_button.clicked.connect(self._on_scpi_disconnect_clicked)
+        self.scpi_send_button.clicked.connect(self._on_scpi_send_clicked)
+        self.scpi_query_button.clicked.connect(self._on_scpi_query_clicked)
+        self.scpi_idn_button.clicked.connect(self._on_scpi_idn_clicked)
         self.start_button.clicked.connect(self._on_start_clicked)
         self.pause_button.clicked.connect(self._on_pause_clicked)
         self.next_stage_button.clicked.connect(self._on_next_stage_clicked)
@@ -853,6 +948,8 @@ class ModbusMainWindow(QMainWindow):
         self.automation_clear_button.clicked.connect(self._on_clear_automation_clicked)
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
         self.keepalive_input.valueChanged.connect(self._update_keepalive_timer_interval)
+        self.scpi_command_input.textChanged.connect(self._update_scpi_buttons)
+        self.scpi_command_input.returnPressed.connect(self._on_scpi_query_clicked)
         self.test_table.itemChanged.connect(self._on_table_item_changed)
         self.automation_table.itemChanged.connect(self._on_automation_table_item_changed)
         self.automation_table.itemSelectionChanged.connect(self._update_automation_buttons)
@@ -964,6 +1061,13 @@ class ModbusMainWindow(QMainWindow):
             slave_id=self.slave_id_input.value(),
             register_format=self.register_format_combo.currentData(),
             keepalive_interval_seconds=self.keepalive_input.value(),
+        )
+
+    def _current_scpi_settings(self) -> ScpiSettings:
+        return ScpiSettings(
+            host=self.scpi_host_input.text().strip() or "127.0.0.1",
+            port=self.scpi_port_input.value(),
+            timeout_seconds=self.scpi_timeout_input.value(),
         )
 
     def _channel_configs(self) -> list[ChannelConfig]:
@@ -1099,6 +1203,75 @@ class ModbusMainWindow(QMainWindow):
         self._set_status(STATUS_DISCONNECTED, "Getrennt")
         self._append_log("Verbindung getrennt")
         self.last_write_value.setText("Noch keine Schreibaktion")
+
+    def _on_scpi_connect_clicked(self) -> None:
+        settings = self._current_scpi_settings()
+        try:
+            self.scpi_service.connect(settings)
+        except Exception as exc:
+            self.scpi_service.disconnect()
+            self._set_scpi_status(STATUS_ERROR, "Fehler")
+            self._update_scpi_buttons()
+            self._append_log(f"SCPI-Verbindung fehlgeschlagen: {settings.host}:{settings.port}. {exc}")
+            self._show_error("SCPI-Verbindung fehlgeschlagen", str(exc))
+            return
+        self._set_scpi_status(STATUS_CONNECTED, "Verbunden")
+        self._update_scpi_buttons()
+        self._append_log(
+            f"SCPI verbunden: {settings.host}:{settings.port}, Timeout {settings.timeout_seconds:.1f} s."
+        )
+        self._append_scpi_console("INFO", f"Verbunden mit {settings.host}:{settings.port}")
+
+    def _on_scpi_disconnect_clicked(self) -> None:
+        self.scpi_service.disconnect()
+        self._set_scpi_status(STATUS_DISCONNECTED, "Getrennt")
+        self._update_scpi_buttons()
+        self._append_log("SCPI-Verbindung getrennt")
+        self._append_scpi_console("INFO", "Verbindung getrennt")
+
+    def _on_scpi_send_clicked(self) -> None:
+        self._run_scpi_command(expect_response=False)
+
+    def _on_scpi_query_clicked(self) -> None:
+        self._run_scpi_command(expect_response=True)
+
+    def _on_scpi_idn_clicked(self) -> None:
+        self.scpi_command_input.setText("*IDN?")
+        self._run_scpi_command(expect_response=True)
+
+    def _run_scpi_command(self, expect_response: bool) -> None:
+        if not self.scpi_service.is_connected:
+            self._show_error("Keine SCPI-Verbindung", "Bitte zuerst die SCPI-Verbindung herstellen.")
+            return
+        command = self.scpi_command_input.text().strip()
+        if not command:
+            self._show_error("Kein SCPI-Kommando", "Bitte ein SCPI-Kommando eingeben.")
+            return
+        try:
+            if expect_response:
+                result = self.scpi_service.query(command)
+                self._append_scpi_console(">>>", result.command)
+                self._append_scpi_console("<<<", result.response_text)
+                self._append_log(f"SCPI Antwort auf {result.command}: {result.response_text}")
+            else:
+                result = self.scpi_service.write(command)
+                self._append_scpi_console(">>>", result.command)
+                self._append_log(f"SCPI gesendet: {result.command}")
+        except Exception as exc:
+            self._set_scpi_status(STATUS_ERROR, "Fehler")
+            self._update_scpi_buttons()
+            self._append_log(f"SCPI-Fehler: {exc}")
+            self._append_scpi_console("ERR", str(exc))
+            self._show_error("SCPI-Kommando fehlgeschlagen", str(exc))
+            return
+        self._set_scpi_status(STATUS_CONNECTED, "Verbunden")
+        self._update_scpi_buttons()
+
+    def _append_scpi_console(self, prefix: str, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.scpi_response_panel.appendPlainText(f"{timestamp} {prefix} {message}")
+        scrollbar = self.scpi_response_panel.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def _on_start_clicked(self) -> None:
         if not self.modbus_service.is_connected:
@@ -1241,6 +1414,9 @@ class ModbusMainWindow(QMainWindow):
         sheet_connection.append(["pt1_p_start_register", self.pt1_p_register_input.value()])
         sheet_connection.append(["pt1_q_ms", self.pt1_q_input.value()])
         sheet_connection.append(["pt1_q_start_register", self.pt1_q_register_input.value()])
+        sheet_connection.append(["scpi_host", self.scpi_host_input.text().strip() or "127.0.0.1"])
+        sheet_connection.append(["scpi_port", self.scpi_port_input.value()])
+        sheet_connection.append(["scpi_timeout_seconds", self.scpi_timeout_input.value()])
 
         sheet_channels = workbook.create_sheet("Kanaele")
         sheet_channels.append(["name", "label", "start_register", "value_type", "start_value"])
@@ -1312,6 +1488,9 @@ class ModbusMainWindow(QMainWindow):
         self.pt1_p_register_input.setValue(int(connection.get("pt1_p_start_register", 0)))
         self.pt1_q_input.setValue(int(connection.get("pt1_q_ms", 0)))
         self.pt1_q_register_input.setValue(int(connection.get("pt1_q_start_register", 0)))
+        self.scpi_host_input.setText(str(connection.get("scpi_host", "127.0.0.1")))
+        self.scpi_port_input.setValue(int(connection.get("scpi_port", 5025)))
+        self.scpi_timeout_input.setValue(float(connection.get("scpi_timeout_seconds", 2.0)))
 
         if "register_format" in connection:
             register_format_value = connection.get("register_format", RegisterFormat.BIG.value)
@@ -1940,6 +2119,7 @@ class ModbusMainWindow(QMainWindow):
             pt1_input.setEnabled(not running)
         self.disconnect_button.setEnabled(not running and self.modbus_service.is_connected)
         self._update_manual_write_buttons()
+        self._update_scpi_buttons()
         self._update_time_copy_button()
         self._update_pause_button()
         self._update_automation_buttons()
@@ -1959,6 +2139,19 @@ class ModbusMainWindow(QMainWindow):
             input_field.setEnabled(manual_write_enabled)
         for button in self.send_value_buttons:
             button.setEnabled(manual_write_enabled)
+
+    def _update_scpi_buttons(self) -> None:
+        busy = self.sequence_controller.has_active_plan or self.series_controller.is_running
+        connected = self.scpi_service.is_connected
+        has_command = bool(self.scpi_command_input.text().strip())
+        self.scpi_host_input.setEnabled(not connected and not busy)
+        self.scpi_port_input.setEnabled(not connected and not busy)
+        self.scpi_timeout_input.setEnabled(not connected and not busy)
+        self.scpi_connect_button.setEnabled(not connected and not busy)
+        self.scpi_disconnect_button.setEnabled(connected and not busy)
+        self.scpi_send_button.setEnabled(connected and not busy and has_command)
+        self.scpi_query_button.setEnabled(connected and not busy and has_command)
+        self.scpi_idn_button.setEnabled(connected and not busy)
 
     def _update_time_copy_button(self) -> None:
         has_source_time = bool(self._item_text(0, self.COLUMN_DURATION))
@@ -1990,9 +2183,18 @@ class ModbusMainWindow(QMainWindow):
         self.current_status_key = status
         self.current_status_text = text
         self.status_badge.setText(text)
+        self._apply_status_badge_style(self.status_badge, status)
+
+    def _set_scpi_status(self, status: str, text: str) -> None:
+        self.current_scpi_status_key = status
+        self.current_scpi_status_text = text
+        self.scpi_status_badge.setText(text)
+        self._apply_status_badge_style(self.scpi_status_badge, status)
+
+    def _apply_status_badge_style(self, label: QLabel, status: str) -> None:
         theme = self.THEMES.get(self.current_theme, self.THEMES["light"])
         status_styles = theme["status_styles"]
-        self.status_badge.setStyleSheet(status_styles.get(status, status_styles[STATUS_DISCONNECTED]))
+        label.setStyleSheet(status_styles.get(status, status_styles[STATUS_DISCONNECTED]))
 
     def _append_log(self, message: str) -> None:
         self.log_panel.appendPlainText(message)
@@ -2250,6 +2452,7 @@ class ModbusMainWindow(QMainWindow):
         self.keepalive_timer.stop()
         self.series_controller.stop()
         self.sequence_controller.stop()
+        self.scpi_service.disconnect()
         self.modbus_service.disconnect()
         super().closeEvent(event)
 

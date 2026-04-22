@@ -32,6 +32,9 @@ class PlanIoTests(unittest.TestCase):
             window.port_input.setValue(502)
             window.slave_id_input.setValue(1)
             window.keepalive_input.setValue(20)
+            window.scpi_host_input.setText("192.168.10.50")
+            window.scpi_port_input.setValue(5025)
+            window.scpi_timeout_input.setValue(3.5)
             window.pt1_p_input.setValue(150)
             window.pt1_p_register_input.setValue(1200)
             window.pt1_q_input.setValue(250)
@@ -86,6 +89,9 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window.port_input.value(), 502)
         self.assertEqual(self.window.slave_id_input.value(), 1)
         self.assertEqual(self.window.keepalive_input.value(), 20)
+        self.assertEqual(self.window.scpi_host_input.text(), "192.168.10.50")
+        self.assertEqual(self.window.scpi_port_input.value(), 5025)
+        self.assertAlmostEqual(self.window.scpi_timeout_input.value(), 3.5)
         self.assertEqual(self.window.pt1_p_input.value(), 150)
         self.assertEqual(self.window.pt1_p_register_input.value(), 1200)
         self.assertEqual(self.window.pt1_q_input.value(), 250)
@@ -125,6 +131,9 @@ class PlanIoTests(unittest.TestCase):
         self.window._load_from_excel(FIXTURE_PATH)
         self.window.host_input.setText("10.0.0.77")
         self.window.keepalive_input.setValue(30)
+        self.window.scpi_host_input.setText("10.10.10.10")
+        self.window.scpi_port_input.setValue(4000)
+        self.window.scpi_timeout_input.setValue(1.5)
         self.window.pt1_p_input.setValue(500)
         self.window.pt1_p_register_input.setValue(2222)
         self.window.pt1_q_register_input.setValue(3333)
@@ -154,6 +163,9 @@ class PlanIoTests(unittest.TestCase):
 
         self.assertEqual(connection["host"], "10.0.0.77")
         self.assertEqual(connection["keepalive_interval_seconds"], 30)
+        self.assertEqual(connection["scpi_host"], "10.10.10.10")
+        self.assertEqual(connection["scpi_port"], 4000)
+        self.assertEqual(connection["scpi_timeout_seconds"], 1.5)
         self.assertEqual(connection["pt1_p_ms"], 500)
         self.assertEqual(connection["pt1_p_start_register"], 2222)
         self.assertEqual(connection["pt1_q_start_register"], 3333)
@@ -178,15 +190,42 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window._item_text(2, self.window.COLUMN_DURATION), "7")
 
     def test_workspace_tabs_separate_key_areas(self) -> None:
-        self.assertEqual(self.window.workspace_tabs.count(), 4)
+        self.assertEqual(self.window.workspace_tabs.count(), 5)
         self.assertEqual(
             [self.window.workspace_tabs.tabText(index) for index in range(self.window.workspace_tabs.count())],
-            ["Testplan", "Kanaele", "Automatisierung", "Protokoll"],
+            ["Testplan", "Kanaele", "Automatisierung", "SCPI", "Protokoll"],
         )
         self.assertIsNotNone(self.window.automation_splitter)
         self.assertIsNotNone(self.window.automation_detail_panel)
         self.assertGreaterEqual(self.window.automation_table.minimumHeight(), 340)
         self.assertLessEqual(self.window.automation_detail_panel.maximumWidth(), 420)
+
+    def test_scpi_query_updates_console_and_status(self) -> None:
+        class StubScpiService:
+            def __init__(self) -> None:
+                self.is_connected = False
+
+            def connect(self, _settings) -> None:
+                self.is_connected = True
+
+            def disconnect(self) -> None:
+                self.is_connected = False
+
+            def query(self, command):
+                from modbus_gui.scpi_service import ScpiResult
+
+                return ScpiResult(command=command, response_text="FGH,LAB,1234,1.0")
+
+        self.window.scpi_service = StubScpiService()
+        self.window._on_scpi_connect_clicked()
+        self.window.scpi_command_input.setText("*IDN?")
+
+        self.window._on_scpi_query_clicked()
+
+        self.assertEqual(self.window.current_scpi_status_text, "Verbunden")
+        console_text = self.window.scpi_response_panel.toPlainText()
+        self.assertIn("*IDN?", console_text)
+        self.assertIn("FGH,LAB,1234,1.0", console_text)
 
     def test_current_plan_can_be_added_to_automation_queue(self) -> None:
         self.window.current_file_path = Path("C:/Tests/Basislauf.xlsx")
