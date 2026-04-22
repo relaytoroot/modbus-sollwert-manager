@@ -280,6 +280,8 @@ class PlanIoTests(unittest.TestCase):
             self.window._automation_item_text(1, self.window.AUTOMATION_COLUMN_STATUS),
             "Wartet",
         )
+        self.assertEqual(self.window._automation_reports[0].started_runs, 1)
+        self.assertIn("gestartet", self.window._automation_reports[0].last_message.lower())
 
         self.window._on_sequence_finished()
         self.assertEqual(self.window.sequence_controller.start.call_count, 2)
@@ -291,6 +293,7 @@ class PlanIoTests(unittest.TestCase):
             self.window._automation_item_text(1, self.window.AUTOMATION_COLUMN_STATUS),
             "Laeuft 1/2",
         )
+        self.assertEqual(self.window._automation_reports[0].successful_runs, 1)
 
         self.window._on_sequence_finished()
         self.assertEqual(self.window.sequence_controller.start.call_count, 3)
@@ -313,6 +316,11 @@ class PlanIoTests(unittest.TestCase):
             self.window._automation_item_text(1, self.window.AUTOMATION_COLUMN_STATUS),
             "Fertig",
         )
+        self.assertEqual(self.window._automation_reports[1].successful_runs, 2)
+        self.assertGreaterEqual(len(self.window._automation_reports[1].history), 3)
+        self.assertEqual(self.window.automation_result_status_value.text(), "Fertig")
+        self.assertEqual(self.window.automation_result_success_value.text(), "2")
+        self.assertIn("erfolgreich", self.window.automation_result_message_value.text().lower())
 
     def test_connect_can_retry_after_failure(self) -> None:
         first_error = RuntimeError("slave antwortet nicht")

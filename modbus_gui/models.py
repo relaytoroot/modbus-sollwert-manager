@@ -125,6 +125,20 @@ class AutomationJob:
     note: str = ""
 
 
+@dataclass(slots=True)
+class AutomationJobReport:
+    job_name: str = ""
+    started_runs: int = 0
+    successful_runs: int = 0
+    failed_runs: int = 0
+    last_status: str = ""
+    last_message: str = ""
+    last_started_at: str = ""
+    last_finished_at: str = ""
+    last_duration_seconds: float = 0.0
+    history: list[str] = field(default_factory=list)
+
+
 STATUS_DISCONNECTED = "disconnected"
 STATUS_CONNECTED = "connected"
 STATUS_RUNNING = "running"

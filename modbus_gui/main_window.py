@@ -1,8 +1,10 @@
 ﻿from __future__ import annotations
 
 import sys
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+from time import perf_counter
 
 from openpyxl import Workbook, load_workbook
 from PyQt5.QtCore import Qt, QTimer
@@ -36,6 +38,7 @@ from PyQt5.QtWidgets import (
 from .modbus_service import ModbusService
 from .models import (
     AutomationJob,
+    AutomationJobReport,
     ChannelConfig,
     ChannelWrite,
     ConnectionSettings,
@@ -225,6 +228,9 @@ class ModbusMainWindow(QMainWindow):
         self._automation_snapshot_dirty = False
         self._automation_runtime_statuses: dict[int, str] = {}
         self._automation_current_row_index: int | None = None
+        self._automation_reports: dict[int, AutomationJobReport] = {}
+        self._automation_current_run_started_at: datetime | None = None
+        self._automation_current_run_perf_started_at: float | None = None
         self.row_checkboxes: list[QCheckBox] = []
         self.automation_row_checkboxes: list[QCheckBox] = []
         self.register_inputs: list[QSpinBox] = []
@@ -355,6 +361,17 @@ class ModbusMainWindow(QMainWindow):
         self.automation_move_down_button = QPushButton("Nach unten")
         self.automation_clear_button = QPushButton("Liste leeren")
         self.automation_table = QTableWidget(self.AUTOMATION_ROW_COUNT, 6)
+        self.automation_result_status_value = QLabel("-")
+        self.automation_result_started_value = QLabel("-")
+        self.automation_result_finished_value = QLabel("-")
+        self.automation_result_duration_value = QLabel("-")
+        self.automation_result_success_value = QLabel("0")
+        self.automation_result_failed_value = QLabel("0")
+        self.automation_result_message_value = QLabel("Noch keine Rueckmeldung")
+        self.automation_result_message_value.setWordWrap(True)
+        self.automation_history_panel = QPlainTextEdit()
+        self.automation_history_panel.setReadOnly(True)
+        self.automation_history_panel.setMinimumHeight(110)
 
         self.test_table = PlanTableWidget(40, 7)
         editable_columns = [
@@ -374,6 +391,7 @@ class ModbusMainWindow(QMainWindow):
         self._refresh_summary()
         self._refresh_automation_summary()
         self._update_automation_buttons()
+        self._refresh_automation_result_panel()
         self._update_manual_write_buttons()
         self._append_log("Anwendung gestartet. Bitte Verbindung pruefen und Testplan laden oder erstellen.")
 
@@ -424,6 +442,7 @@ class ModbusMainWindow(QMainWindow):
         layout.setSpacing(12)
         layout.addWidget(self._build_automation_overview_group())
         layout.addWidget(self._build_automation_queue_group(), 1)
+        layout.addWidget(self._build_automation_results_group())
         layout.addWidget(self._build_automation_hint_group())
         return tab
 
@@ -451,13 +470,39 @@ class ModbusMainWindow(QMainWindow):
         layout.addWidget(self.automation_table)
         return group
 
+    def _build_automation_results_group(self) -> QGroupBox:
+        group = QGroupBox("Laufergebnis")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+
+        summary_grid = QGridLayout()
+        summary_grid.addWidget(QLabel("Status"), 0, 0)
+        summary_grid.addWidget(self.automation_result_status_value, 0, 1)
+        summary_grid.addWidget(QLabel("Gestartet"), 0, 2)
+        summary_grid.addWidget(self.automation_result_started_value, 0, 3)
+        summary_grid.addWidget(QLabel("Beendet"), 1, 0)
+        summary_grid.addWidget(self.automation_result_finished_value, 1, 1)
+        summary_grid.addWidget(QLabel("Letzte Dauer"), 1, 2)
+        summary_grid.addWidget(self.automation_result_duration_value, 1, 3)
+        summary_grid.addWidget(QLabel("Erfolgreiche Durchgaenge"), 2, 0)
+        summary_grid.addWidget(self.automation_result_success_value, 2, 1)
+        summary_grid.addWidget(QLabel("Fehler"), 2, 2)
+        summary_grid.addWidget(self.automation_result_failed_value, 2, 3)
+        summary_grid.addWidget(QLabel("Letzte Rueckmeldung"), 3, 0)
+        summary_grid.addWidget(self.automation_result_message_value, 3, 1, 1, 3)
+        summary_grid.setColumnStretch(1, 1)
+        summary_grid.setColumnStretch(3, 1)
+        layout.addLayout(summary_grid)
+        layout.addWidget(self.automation_history_panel)
+        return group
+
     def _build_automation_hint_group(self) -> QGroupBox:
         group = QGroupBox("Hinweis")
         layout = QVBoxLayout(group)
         info_text = QLabel(
-            "Hier bereitest du bereits mehrere Testplaene, Wiederholungen und Kommentare "
-            "fuer einen spaeteren Serienlauf vor. Die eigentliche automatische Ausfuehrung "
-            "bauen wir im naechsten Schritt auf dieser Struktur auf."
+            "Die Serienplanung, automatische Abarbeitung und Laufuebersicht sind jetzt "
+            "getrennt vom eigentlichen Testplan aufgebaut. Darauf kann im naechsten "
+            "Schritt eine SCPI-Steuerung sauber aufsetzen, ohne die Modbus-Logik zu vermischen."
         )
         info_text.setWordWrap(True)
         info_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -781,6 +826,7 @@ class ModbusMainWindow(QMainWindow):
         self.test_table.itemChanged.connect(self._on_table_item_changed)
         self.automation_table.itemChanged.connect(self._on_automation_table_item_changed)
         self.automation_table.itemSelectionChanged.connect(self._update_automation_buttons)
+        self.automation_table.itemSelectionChanged.connect(self._refresh_automation_result_panel)
         self.sequence_controller.log_message.connect(self._append_log)
         self.sequence_controller.state_changed.connect(self._set_status)
         self.sequence_controller.stage_changed.connect(self._on_stage_changed)
@@ -1057,6 +1103,7 @@ class ModbusMainWindow(QMainWindow):
         except RuntimeError as exc:
             self._show_error("Automatisierung ungueltig", str(exc))
             return
+        self._clear_automation_results()
         self._automation_runtime_statuses = {
             row: ("Wartet" if self.automation_row_checkboxes[row].isChecked() else self._default_automation_status(row))
             for row in range(self.automation_table.rowCount())
@@ -1396,6 +1443,66 @@ class ModbusMainWindow(QMainWindow):
         self._automation_runtime_statuses[row] = status_text
         self._apply_automation_statuses()
 
+    def _ensure_automation_report(self, row: int, job_name: str = "") -> AutomationJobReport:
+        report = self._automation_reports.get(row)
+        if report is None:
+            report = AutomationJobReport(job_name=job_name or self._automation_item_text(row, self.AUTOMATION_COLUMN_NAME))
+            self._automation_reports[row] = report
+        elif job_name:
+            report.job_name = job_name
+        return report
+
+    def _append_automation_history(self, row: int, message: str) -> None:
+        report = self._ensure_automation_report(row)
+        report.history.append(message)
+        self._refresh_automation_result_panel()
+
+    def _clear_automation_results(self) -> None:
+        self._automation_reports = {}
+        self._automation_current_run_started_at = None
+        self._automation_current_run_perf_started_at = None
+        self._refresh_automation_result_panel()
+
+    def _format_automation_timestamp(self, timestamp: datetime | None) -> str:
+        return "-" if timestamp is None else timestamp.strftime("%d.%m.%Y %H:%M:%S")
+
+    def _format_automation_duration(self, duration_seconds: float) -> str:
+        if duration_seconds <= 0:
+            return "-"
+        return f"{duration_seconds:.1f} s"
+
+    def _refresh_automation_result_panel(self) -> None:
+        row = self.automation_table.currentRow()
+        if row < 0:
+            self.automation_result_status_value.setText("-")
+            self.automation_result_started_value.setText("-")
+            self.automation_result_finished_value.setText("-")
+            self.automation_result_duration_value.setText("-")
+            self.automation_result_success_value.setText("0")
+            self.automation_result_failed_value.setText("0")
+            self.automation_result_message_value.setText("Noch keine Rueckmeldung")
+            self.automation_history_panel.setPlainText("")
+            return
+        report = self._automation_reports.get(row)
+        if report is None:
+            self.automation_result_status_value.setText(self._automation_item_text(row, self.AUTOMATION_COLUMN_STATUS) or "-")
+            self.automation_result_started_value.setText("-")
+            self.automation_result_finished_value.setText("-")
+            self.automation_result_duration_value.setText("-")
+            self.automation_result_success_value.setText("0")
+            self.automation_result_failed_value.setText("0")
+            self.automation_result_message_value.setText("Noch keine Rueckmeldung")
+            self.automation_history_panel.setPlainText("")
+            return
+        self.automation_result_status_value.setText(report.last_status or self._automation_item_text(row, self.AUTOMATION_COLUMN_STATUS) or "-")
+        self.automation_result_started_value.setText(report.last_started_at or "-")
+        self.automation_result_finished_value.setText(report.last_finished_at or "-")
+        self.automation_result_duration_value.setText(self._format_automation_duration(report.last_duration_seconds))
+        self.automation_result_success_value.setText(str(report.successful_runs))
+        self.automation_result_failed_value.setText(str(report.failed_runs))
+        self.automation_result_message_value.setText(report.last_message or "Noch keine Rueckmeldung")
+        self.automation_history_panel.setPlainText("\n".join(report.history))
+
     def _append_automation_entry(self, name: str, source: str, repeat_count: str = "1", note: str = "") -> None:
         row = self._next_empty_automation_row()
         if row < 0:
@@ -1414,6 +1521,7 @@ class ModbusMainWindow(QMainWindow):
             self._automation_ui_update_in_progress = False
         self.automation_table.selectRow(row)
         self._clear_automation_runtime_statuses()
+        self._clear_automation_results()
         self._mark_dirty()
         self._refresh_automation_summary()
         self._update_automation_buttons()
@@ -1438,6 +1546,7 @@ class ModbusMainWindow(QMainWindow):
             self._clear_automation_runtime_statuses()
         else:
             self._apply_automation_statuses()
+        self._clear_automation_results()
         if mark_dirty:
             self._mark_dirty()
 
@@ -1481,6 +1590,7 @@ class ModbusMainWindow(QMainWindow):
         self._swap_automation_rows(current_row, target_row)
         self.automation_table.selectRow(target_row)
         self._clear_automation_runtime_statuses()
+        self._clear_automation_results()
         self._mark_dirty()
         self._refresh_automation_summary()
         self._update_automation_buttons()
@@ -1553,6 +1663,7 @@ class ModbusMainWindow(QMainWindow):
             self._apply_automation_statuses()
         else:
             self._clear_automation_runtime_statuses()
+        self._clear_automation_results()
         self._refresh_automation_summary()
         self._update_automation_buttons()
 
@@ -1595,17 +1706,23 @@ class ModbusMainWindow(QMainWindow):
     def _restore_automation_snapshot(self) -> None:
         if self._automation_snapshot_bytes is None:
             return
+        selected_row = self.automation_table.currentRow()
+        preserved_reports = self._automation_reports
         self._load_from_excel(
             BytesIO(self._automation_snapshot_bytes),
             load_automation=True,
             preserve_automation_statuses=True,
         )
+        self._automation_reports = preserved_reports
         self._apply_automation_statuses()
+        if 0 <= selected_row < self.automation_table.rowCount():
+            self.automation_table.selectRow(selected_row)
         self.current_file_path = self._automation_snapshot_file_path
         if self.modbus_service.is_connected:
             self.modbus_service.update_runtime_settings(self._current_settings())
         self._set_dirty(self._automation_snapshot_dirty)
         self._update_window_title()
+        self._refresh_automation_result_panel()
         self._automation_snapshot_bytes = None
         self._automation_snapshot_file_path = None
         self._automation_snapshot_dirty = False
@@ -1715,6 +1832,7 @@ class ModbusMainWindow(QMainWindow):
                 self._automation_ui_update_in_progress = False
         if not self.series_controller.is_running and item.column() != self.AUTOMATION_COLUMN_STATUS:
             self._clear_automation_runtime_statuses()
+            self._clear_automation_results()
         self._refresh_automation_summary()
         self._update_automation_buttons()
 
@@ -1722,6 +1840,7 @@ class ModbusMainWindow(QMainWindow):
         if self._automation_ui_update_in_progress or self.series_controller.is_running:
             return
         self._clear_automation_runtime_statuses()
+        self._clear_automation_results()
 
     def _refresh_summary(self) -> None:
         if self.sequence_controller.has_active_plan:
@@ -1883,8 +2002,23 @@ class ModbusMainWindow(QMainWindow):
         run_index: int,
         run_total: int,
     ) -> None:
+        self._automation_current_run_started_at = datetime.now()
+        self._automation_current_run_perf_started_at = perf_counter()
         self._automation_current_row_index = row_index
         self._set_automation_runtime_status(row_index, f"Laeuft {repeat_index}/{repeat_total}")
+        report = self._ensure_automation_report(row_index, name)
+        report.started_runs += 1
+        report.last_status = f"Laeuft {repeat_index}/{repeat_total}"
+        report.last_message = (
+            f"Durchgang {repeat_index}/{repeat_total} gestartet ({run_index}/{run_total} der Serie)."
+        )
+        report.last_started_at = self._format_automation_timestamp(self._automation_current_run_started_at)
+        report.last_finished_at = ""
+        report.last_duration_seconds = 0.0
+        self._append_automation_history(
+            row_index,
+            f"{report.last_started_at} | Start | {report.last_message}",
+        )
         self.automation_table.selectRow(row_index)
         self.workspace_tabs.setCurrentIndex(0)
         self.automation_summary_label.setText(
@@ -1901,9 +2035,27 @@ class ModbusMainWindow(QMainWindow):
         run_index: int,
         run_total: int,
     ) -> None:
+        finished_at = datetime.now()
+        duration_seconds = 0.0
+        if self._automation_current_run_perf_started_at is not None:
+            duration_seconds = max(0.0, perf_counter() - self._automation_current_run_perf_started_at)
         self._automation_current_row_index = None
         status_text = "Fertig" if repeat_index >= repeat_total else "Wartet"
         self._set_automation_runtime_status(row_index, status_text)
+        report = self._ensure_automation_report(row_index, name)
+        report.successful_runs += 1
+        report.last_status = status_text
+        report.last_message = (
+            f"Durchgang {repeat_index}/{repeat_total} erfolgreich abgeschlossen ({run_index}/{run_total} der Serie)."
+        )
+        report.last_finished_at = self._format_automation_timestamp(finished_at)
+        report.last_duration_seconds = duration_seconds
+        self._append_automation_history(
+            row_index,
+            f"{report.last_finished_at} | Fertig | {report.last_message}",
+        )
+        self._automation_current_run_started_at = None
+        self._automation_current_run_perf_started_at = None
         self.automation_table.selectRow(row_index)
         self.automation_summary_label.setText(
             f"Letzter abgeschlossener Serienjob: {name} | Wiederholung {repeat_index}/{repeat_total} | Durchgang {run_index}/{run_total}"
@@ -1930,16 +2082,43 @@ class ModbusMainWindow(QMainWindow):
 
     def _on_automation_stopped(self) -> None:
         if self._automation_current_row_index is not None:
+            finished_at = datetime.now()
+            report = self._ensure_automation_report(self._automation_current_row_index)
+            report.last_status = "Gestoppt"
+            report.last_message = "Serienlauf waehrend des aktuellen Durchgangs gestoppt."
+            report.last_finished_at = self._format_automation_timestamp(finished_at)
+            if self._automation_current_run_perf_started_at is not None:
+                report.last_duration_seconds = max(0.0, perf_counter() - self._automation_current_run_perf_started_at)
+            self._append_automation_history(
+                self._automation_current_row_index,
+                f"{report.last_finished_at} | Gestoppt | {report.last_message}",
+            )
             self._set_automation_runtime_status(self._automation_current_row_index, "Gestoppt")
             self._automation_current_row_index = None
+        self._automation_current_run_started_at = None
+        self._automation_current_run_perf_started_at = None
         self._restore_automation_snapshot()
         self._highlight_current_row(-1)
         self.automation_summary_label.setText("Serienlauf gestoppt.")
 
     def _on_automation_error(self, message: str) -> None:
         if self._automation_current_row_index is not None:
+            finished_at = datetime.now()
+            report = self._ensure_automation_report(self._automation_current_row_index)
+            report.failed_runs += 1
+            report.last_status = "Fehler"
+            report.last_message = message
+            report.last_finished_at = self._format_automation_timestamp(finished_at)
+            if self._automation_current_run_perf_started_at is not None:
+                report.last_duration_seconds = max(0.0, perf_counter() - self._automation_current_run_perf_started_at)
+            self._append_automation_history(
+                self._automation_current_row_index,
+                f"{report.last_finished_at} | Fehler | {message}",
+            )
             self._set_automation_runtime_status(self._automation_current_row_index, "Fehler")
             self._automation_current_row_index = None
+        self._automation_current_run_started_at = None
+        self._automation_current_run_perf_started_at = None
         self._restore_automation_snapshot()
         self._set_running_widgets(False)
         self._set_status(STATUS_ERROR, "Fehler")
