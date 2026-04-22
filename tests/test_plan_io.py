@@ -242,6 +242,46 @@ class PlanIoTests(unittest.TestCase):
             reloaded_window._set_dirty(False)
             reloaded_window.close()
 
+    def test_automation_run_advances_queue_and_restores_editor_state(self) -> None:
+        self.window.channel_label_inputs[0].setText("Originalzustand")
+        self.window.current_file_path = Path("C:/Tests/Serienmaster.xlsx")
+        self.window._set_dirty(True)
+        self.window._append_automation_entry(
+            name="Plan A",
+            source=str(FIXTURE_PATH),
+            repeat_count="1",
+            note="Erster Durchgang",
+        )
+        self.window._append_automation_entry(
+            name="Plan B",
+            source=str(FIXTURE_PATH),
+            repeat_count="2",
+            note="Zweiter Durchgang",
+        )
+        self.window.modbus_service._client = Mock()
+        self.window.modbus_service._settings = self.window._current_settings()
+        self.window.sequence_controller.start = Mock()
+
+        self.window._on_automation_start_clicked()
+
+        self.assertTrue(self.window.series_controller.is_running)
+        self.assertEqual(self.window.sequence_controller.start.call_count, 1)
+        self.assertEqual(self.window.current_file_path, Path("C:/Tests/Serienmaster.xlsx"))
+        self.assertEqual(self.window.workspace_tabs.tabText(self.window.workspace_tabs.currentIndex()), "Testplan")
+
+        self.window._on_sequence_finished()
+        self.assertEqual(self.window.sequence_controller.start.call_count, 2)
+
+        self.window._on_sequence_finished()
+        self.assertEqual(self.window.sequence_controller.start.call_count, 3)
+
+        self.window._on_sequence_finished()
+        self.assertFalse(self.window.series_controller.is_running)
+        self.assertEqual(self.window.sequence_controller.start.call_count, 3)
+        self.assertEqual(self.window.channel_label_inputs[0].text(), "Originalzustand")
+        self.assertEqual(self.window.current_file_path, Path("C:/Tests/Serienmaster.xlsx"))
+        self.assertTrue(self.window._has_unsaved_changes)
+
     def test_connect_can_retry_after_failure(self) -> None:
         first_error = RuntimeError("slave antwortet nicht")
         self.window.modbus_service.connect = Mock(side_effect=[first_error, None])

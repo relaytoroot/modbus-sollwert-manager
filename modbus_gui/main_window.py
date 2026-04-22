@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import sys
+from io import BytesIO
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -34,6 +35,7 @@ from PyQt5.QtWidgets import (
 
 from .modbus_service import ModbusService
 from .models import (
+    AutomationJob,
     ChannelConfig,
     ChannelWrite,
     ConnectionSettings,
@@ -57,6 +59,7 @@ from .app_info import (
     resource_path,
 )
 from .sequence_controller import SequenceController
+from .series_controller import SeriesController
 from .value_encoder import ValueEncoder, ValueEncodingError
 
 
@@ -211,10 +214,14 @@ class ModbusMainWindow(QMainWindow):
 
         self.modbus_service = ModbusService()
         self.sequence_controller = SequenceController(self.modbus_service, self)
+        self.series_controller = SeriesController(self._start_automation_job, self)
         self.keepalive_timer = QTimer(self)
         self.keepalive_timer.timeout.connect(self._on_keepalive_tick)
         self.current_file_path: Path | None = None
         self._has_unsaved_changes = False
+        self._automation_snapshot_bytes: bytes | None = None
+        self._automation_snapshot_file_path: Path | None = None
+        self._automation_snapshot_dirty = False
         self.row_checkboxes: list[QCheckBox] = []
         self.automation_row_checkboxes: list[QCheckBox] = []
         self.register_inputs: list[QSpinBox] = []
@@ -337,6 +344,7 @@ class ModbusMainWindow(QMainWindow):
         self.workspace_tabs.setObjectName("workspaceTabs")
         self.automation_summary_label = QLabel("Noch keine Serienjobs geplant.")
         self.automation_summary_label.setWordWrap(True)
+        self.automation_start_button = QPushButton("Serienlauf starten")
         self.automation_add_current_button = QPushButton("Aktuellen Plan uebernehmen")
         self.automation_add_file_button = QPushButton("Plan aus Datei")
         self.automation_remove_button = QPushButton("Auswahl entfernen")
@@ -422,6 +430,7 @@ class ModbusMainWindow(QMainWindow):
         layout.setSpacing(10)
 
         button_row = QHBoxLayout()
+        button_row.addWidget(self.automation_start_button)
         button_row.addWidget(self.automation_add_current_button)
         button_row.addWidget(self.automation_add_file_button)
         button_row.addWidget(self.automation_remove_button)
@@ -757,6 +766,7 @@ class ModbusMainWindow(QMainWindow):
         self.save_button.clicked.connect(self._on_save_clicked)
         self.load_button.clicked.connect(self._on_load_clicked)
         self.copy_stage_time_button.clicked.connect(self._copy_first_stage_time_to_active_rows)
+        self.automation_start_button.clicked.connect(self._on_automation_start_clicked)
         self.automation_add_current_button.clicked.connect(self._on_add_current_plan_to_automation_clicked)
         self.automation_add_file_button.clicked.connect(self._on_add_plan_file_to_automation_clicked)
         self.automation_remove_button.clicked.connect(self._on_remove_automation_rows_clicked)
@@ -775,6 +785,13 @@ class ModbusMainWindow(QMainWindow):
         self.sequence_controller.finished.connect(self._on_sequence_finished)
         self.sequence_controller.error_occurred.connect(self._on_sequence_error)
         self.sequence_controller.stage_write_completed.connect(self._on_stage_write_completed)
+        self.series_controller.log_message.connect(self._append_log)
+        self.series_controller.job_started.connect(self._on_automation_job_started)
+        self.series_controller.job_finished.connect(self._on_automation_job_finished)
+        self.series_controller.progress_changed.connect(self._on_automation_progress_changed)
+        self.series_controller.finished.connect(self._on_automation_finished)
+        self.series_controller.stopped.connect(self._on_automation_stopped)
+        self.series_controller.error_occurred.connect(self._on_automation_error)
         for checkbox in self.row_checkboxes:
             checkbox.toggled.connect(self._apply_row_visuals)
             checkbox.toggled.connect(self._refresh_summary)
@@ -903,6 +920,7 @@ class ModbusMainWindow(QMainWindow):
             response_text = self.modbus_service.keep_alive(address=self._keepalive_address(), count=1)
         except Exception as exc:
             self._append_log(f"Keepalive fehlgeschlagen: {exc}")
+            self.series_controller.stop()
             self.sequence_controller.stop()
             self._set_running_widgets(False)
             self.modbus_service.disconnect()
@@ -988,6 +1006,7 @@ class ModbusMainWindow(QMainWindow):
         self._start_keepalive_timer()
 
     def _on_disconnect_clicked(self) -> None:
+        self.series_controller.stop()
         self.sequence_controller.stop()
         self._stop_keepalive_timer()
         self.modbus_service.disconnect()
@@ -1020,6 +1039,28 @@ class ModbusMainWindow(QMainWindow):
         self._set_running_widgets(True)
         self._update_pause_button()
 
+    def _on_automation_start_clicked(self) -> None:
+        if self.series_controller.is_running:
+            return
+        if not self.modbus_service.is_connected:
+            self._show_error("Keine Verbindung", "Bitte zuerst verbinden.")
+            return
+        try:
+            jobs = self._build_automation_jobs()
+        except RuntimeError as exc:
+            self._show_error("Automatisierung ungueltig", str(exc))
+            return
+        self._capture_automation_snapshot()
+        try:
+            self.series_controller.start(jobs)
+        except Exception as exc:
+            self._restore_automation_snapshot()
+            self._show_error("Serienlauf fehlgeschlagen", str(exc))
+            return
+        if self.series_controller.is_running:
+            self._set_running_widgets(True)
+            self._update_pause_button()
+
     def _on_pause_clicked(self) -> None:
         if not self.sequence_controller.has_active_plan:
             return
@@ -1038,6 +1079,7 @@ class ModbusMainWindow(QMainWindow):
         self._update_pause_button()
 
     def _on_stop_clicked(self) -> None:
+        self.series_controller.stop()
         self.sequence_controller.stop()
         self._set_running_widgets(False)
         if self.modbus_service.is_connected:
@@ -1092,7 +1134,7 @@ class ModbusMainWindow(QMainWindow):
         self._append_log(f"Testplan gespeichert: {path}")
         return True
 
-    def _save_to_excel(self, path: Path) -> None:
+    def _save_to_excel(self, path: Path | BytesIO) -> None:
         workbook = Workbook()
         sheet_connection = workbook.active
         sheet_connection.title = "Verbindung"
@@ -1153,7 +1195,7 @@ class ModbusMainWindow(QMainWindow):
             )
         workbook.save(path)
 
-    def _load_from_excel(self, path: Path) -> None:
+    def _load_from_excel(self, path: Path | BytesIO, load_automation: bool = True) -> None:
         workbook = load_workbook(path)
         if "Verbindung" not in workbook.sheetnames or "Kanaele" not in workbook.sheetnames or "Testplan" not in workbook.sheetnames:
             raise RuntimeError("Die Excel-Datei muss die Blaetter 'Verbindung', 'Kanaele' und 'Testplan' enthalten.")
@@ -1248,7 +1290,8 @@ class ModbusMainWindow(QMainWindow):
         self._update_time_copy_button()
         self._apply_row_visuals()
         self._refresh_summary()
-        self._load_automation_from_workbook(workbook)
+        if load_automation:
+            self._load_automation_from_workbook(workbook)
 
     def _set_combo_value(self, combo: QComboBox, raw_value: str) -> None:
         normalized_raw = getattr(raw_value, "value", raw_value)
@@ -1450,6 +1493,75 @@ class ModbusMainWindow(QMainWindow):
         self._refresh_automation_summary()
         self._update_automation_buttons()
 
+    def _build_automation_jobs(self) -> list[AutomationJob]:
+        jobs: list[AutomationJob] = []
+        for row in range(self.automation_table.rowCount()):
+            if not self.automation_row_checkboxes[row].isChecked():
+                continue
+            source_text = self._automation_item_text(row, self.AUTOMATION_COLUMN_SOURCE)
+            if not source_text:
+                raise RuntimeError(f"Serienjob Zeile {row + 1}: Quelle fehlt")
+            source_path = Path(source_text)
+            if not source_path.exists():
+                raise RuntimeError(f"Serienjob Zeile {row + 1}: Datei nicht gefunden - {source_path}")
+            repeat_count = self._automation_repeat_count(row)
+            if repeat_count <= 0:
+                raise RuntimeError(f"Serienjob Zeile {row + 1}: Wiederholungen muessen groesser als 0 sein")
+            name = self._automation_item_text(row, self.AUTOMATION_COLUMN_NAME) or source_path.stem
+            note = self._automation_item_text(row, self.AUTOMATION_COLUMN_NOTE)
+            jobs.append(
+                AutomationJob(
+                    row_index=row,
+                    name=name,
+                    source_path=source_path,
+                    repeat_count=repeat_count,
+                    note=note,
+                )
+            )
+        if not jobs:
+            raise RuntimeError("Es ist kein aktiver Serienjob vorhanden")
+        return jobs
+
+    def _capture_automation_snapshot(self) -> None:
+        buffer = BytesIO()
+        self._save_to_excel(buffer)
+        self._automation_snapshot_bytes = buffer.getvalue()
+        self._automation_snapshot_file_path = self.current_file_path
+        self._automation_snapshot_dirty = self._has_unsaved_changes
+
+    def _restore_automation_snapshot(self) -> None:
+        if self._automation_snapshot_bytes is None:
+            return
+        self._load_from_excel(BytesIO(self._automation_snapshot_bytes), load_automation=True)
+        self.current_file_path = self._automation_snapshot_file_path
+        if self.modbus_service.is_connected:
+            self.modbus_service.update_runtime_settings(self._current_settings())
+        self._set_dirty(self._automation_snapshot_dirty)
+        self._update_window_title()
+        self._automation_snapshot_bytes = None
+        self._automation_snapshot_file_path = None
+        self._automation_snapshot_dirty = False
+
+    def _start_automation_job(self, job: AutomationJob) -> None:
+        self._load_from_excel(job.source_path, load_automation=False)
+        if not self.modbus_service.is_connected:
+            raise RuntimeError("Keine aktive Modbus-Verbindung")
+        active_settings = self.modbus_service.settings
+        requested_settings = self._current_settings()
+        if active_settings is not None and (
+            active_settings.host != requested_settings.host or active_settings.port != requested_settings.port
+        ):
+            raise RuntimeError(
+                "Der Serienlauf unterstuetzt in dieser Version nur Testplaene mit derselben IP-Adresse und demselben Port wie die aktive Verbindung."
+            )
+        plan = self._build_stage_plan()
+        if not plan:
+            raise RuntimeError(f"Testplan {job.source_path.name} enthaelt keine aktive Stufe mit Zeit und Sollwerten")
+        self.modbus_service.update_runtime_settings(requested_settings)
+        self._update_keepalive_timer_interval()
+        self.sequence_controller.start(plan)
+        self.workspace_tabs.setCurrentIndex(0)
+
     def _copy_first_stage_time_to_active_rows(self) -> None:
         source_text = self._item_text(0, self.COLUMN_DURATION)
         if not source_text:
@@ -1580,6 +1692,7 @@ class ModbusMainWindow(QMainWindow):
         self.register_format_combo.setEnabled(not connected)
         self.keepalive_input.setEnabled(not connected)
         self._update_manual_write_buttons()
+        self._update_automation_buttons()
 
     def _set_running_widgets(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
@@ -1632,13 +1745,19 @@ class ModbusMainWindow(QMainWindow):
         not_running = not self.sequence_controller.has_active_plan
         selected_rows = self._selected_automation_rows()
         current_row = self.automation_table.currentRow()
-        self.automation_add_current_button.setEnabled(not_running)
-        self.automation_add_file_button.setEnabled(not_running)
-        self.automation_remove_button.setEnabled(not_running and bool(selected_rows))
-        self.automation_clear_button.setEnabled(not_running and self._has_any_automation_entries())
-        self.automation_move_up_button.setEnabled(not_running and current_row > 0)
+        has_entries = self._has_any_automation_entries()
+        self.automation_start_button.setEnabled(
+            not_running and not self.series_controller.is_running and has_entries and self.modbus_service.is_connected
+        )
+        self.automation_add_current_button.setEnabled(not_running and not self.series_controller.is_running)
+        self.automation_add_file_button.setEnabled(not_running and not self.series_controller.is_running)
+        self.automation_remove_button.setEnabled(not_running and not self.series_controller.is_running and bool(selected_rows))
+        self.automation_clear_button.setEnabled(not_running and not self.series_controller.is_running and has_entries)
+        self.automation_move_up_button.setEnabled(not_running and not self.series_controller.is_running and current_row > 0)
         self.automation_move_down_button.setEnabled(
-            not_running and 0 <= current_row < self.automation_table.rowCount() - 1
+            not_running
+            and not self.series_controller.is_running
+            and 0 <= current_row < self.automation_table.rowCount() - 1
         )
 
     def _set_status(self, status: str, text: str) -> None:
@@ -1664,15 +1783,80 @@ class ModbusMainWindow(QMainWindow):
         self.stage_remaining_value.setText(self._format_seconds(stage_remaining))
 
     def _on_sequence_finished(self) -> None:
+        if self.series_controller.is_running:
+            self.series_controller.plan_finished()
+            return
         self._set_running_widgets(False)
         self.last_write_value.setText("Testplan abgeschlossen")
         self._highlight_current_row(-1)
 
     def _on_sequence_error(self, message: str) -> None:
+        if self.series_controller.is_running:
+            self.series_controller.plan_failed(message)
+            return
         self._set_running_widgets(False)
         self.last_write_value.setText(message)
         self._show_error("Testlauf fehlgeschlagen", message)
         self._highlight_current_row(-1)
+
+    def _on_automation_job_started(
+        self,
+        row_index: int,
+        name: str,
+        repeat_index: int,
+        repeat_total: int,
+        run_index: int,
+        run_total: int,
+    ) -> None:
+        self.automation_table.selectRow(row_index)
+        self.workspace_tabs.setCurrentIndex(0)
+        self.automation_summary_label.setText(
+            f"Serienlauf aktiv: {name} | Wiederholung {repeat_index}/{repeat_total} | Durchgang {run_index}/{run_total}"
+        )
+        self.last_write_value.setText(f"Serienlauf: {name} ({repeat_index}/{repeat_total})")
+
+    def _on_automation_job_finished(
+        self,
+        row_index: int,
+        name: str,
+        repeat_index: int,
+        repeat_total: int,
+        run_index: int,
+        run_total: int,
+    ) -> None:
+        self.automation_table.selectRow(row_index)
+        self.automation_summary_label.setText(
+            f"Letzter abgeschlossener Serienjob: {name} | Wiederholung {repeat_index}/{repeat_total} | Durchgang {run_index}/{run_total}"
+        )
+
+    def _on_automation_progress_changed(self, completed_runs: int, total_runs: int) -> None:
+        if self.series_controller.is_running:
+            return
+        self.automation_summary_label.setText(
+            f"Serienlauf abgeschlossen: {completed_runs}/{total_runs} Durchgaenge beendet."
+        )
+
+    def _on_automation_finished(self) -> None:
+        self._restore_automation_snapshot()
+        self._set_running_widgets(False)
+        self._set_status(STATUS_FINISHED, "Serienlauf fertig")
+        self.last_write_value.setText("Serienlauf abgeschlossen")
+        self._highlight_current_row(-1)
+        self._refresh_automation_summary()
+
+    def _on_automation_stopped(self) -> None:
+        self._restore_automation_snapshot()
+        self._highlight_current_row(-1)
+        self._refresh_automation_summary()
+
+    def _on_automation_error(self, message: str) -> None:
+        self._restore_automation_snapshot()
+        self._set_running_widgets(False)
+        self._set_status(STATUS_ERROR, "Fehler")
+        self.last_write_value.setText(message)
+        self._highlight_current_row(-1)
+        self._refresh_automation_summary()
+        self._show_error("Serienlauf fehlgeschlagen", message)
 
     def _on_stage_write_completed(self, stage_number: int, message: str) -> None:
         self.last_write_value.setText(f"Stufe {stage_number}: {message}")
@@ -1689,8 +1873,11 @@ class ModbusMainWindow(QMainWindow):
         self._mark_dirty()
 
     def _on_add_current_plan_to_automation_clicked(self) -> None:
-        source = str(self.current_file_path) if self.current_file_path else "Aktuelle Sitzung (noch nicht gespeichert)"
-        name = self.current_file_path.stem if self.current_file_path else "Aktueller Testplan"
+        if self.current_file_path is None:
+            self._show_error("Testplan zuerst speichern", "Bitte den aktuellen Testplan zuerst als Excel-Datei speichern.")
+            return
+        source = str(self.current_file_path)
+        name = self.current_file_path.stem
         note = "Aus aktueller Konfiguration uebernommen"
         self._append_automation_entry(name=name, source=source, repeat_count="1", note=note)
 
@@ -1760,6 +1947,7 @@ class ModbusMainWindow(QMainWindow):
             event.ignore()
             return
         self.keepalive_timer.stop()
+        self.series_controller.stop()
         self.sequence_controller.stop()
         self.modbus_service.disconnect()
         super().closeEvent(event)

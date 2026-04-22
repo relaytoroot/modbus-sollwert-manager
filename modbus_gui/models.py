@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 
 class RegisterFormat(str, Enum):
@@ -113,6 +114,15 @@ class StageExecution:
     duration_seconds: int
     writes: list[ChannelWrite] = field(default_factory=list)
     skipped_channels: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AutomationJob:
+    row_index: int
+    name: str
+    source_path: Path
+    repeat_count: int = 1
+    note: str = ""
 
 
 STATUS_DISCONNECTED = "disconnected"
