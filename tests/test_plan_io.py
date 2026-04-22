@@ -177,6 +177,13 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window._item_text(1, self.window.COLUMN_DURATION), "7")
         self.assertEqual(self.window._item_text(2, self.window.COLUMN_DURATION), "7")
 
+    def test_workspace_tabs_separate_key_areas(self) -> None:
+        self.assertEqual(self.window.workspace_tabs.count(), 4)
+        self.assertEqual(
+            [self.window.workspace_tabs.tabText(index) for index in range(self.window.workspace_tabs.count())],
+            ["Testplan", "Kanaele", "Automatisierung", "Protokoll"],
+        )
+
     def test_connect_can_retry_after_failure(self) -> None:
         first_error = RuntimeError("slave antwortet nicht")
         self.window.modbus_service.connect = Mock(side_effect=[first_error, None])

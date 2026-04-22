@@ -24,8 +24,8 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
-    QSplitter,
     QStyledItemDelegate,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -325,7 +325,8 @@ class ModbusMainWindow(QMainWindow):
         self.log_panel.setReadOnly(True)
         self.log_panel.setMaximumBlockCount(1000)
         self.log_panel.setMinimumHeight(120)
-        self.log_panel.setMaximumHeight(260)
+        self.workspace_tabs = QTabWidget()
+        self.workspace_tabs.setObjectName("workspaceTabs")
 
         self.test_table = PlanTableWidget(40, 7)
         editable_columns = [
@@ -357,17 +358,63 @@ class ModbusMainWindow(QMainWindow):
         top_cards.addWidget(self._build_format_group(), 2)
         top_cards.addWidget(self._build_control_group(), 3)
         root.addLayout(top_cards)
-        root.addWidget(self._build_channel_group())
-
-        self.main_splitter = QSplitter(Qt.Vertical)
-        self.main_splitter.addWidget(self._build_table_group())
-        self.main_splitter.addWidget(self._build_log_group())
-        self.main_splitter.setChildrenCollapsible(False)
-        self.main_splitter.setStretchFactor(0, 5)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setSizes([700, 180])
-        root.addWidget(self.main_splitter, 1)
+        root.addWidget(self._build_workspace_tabs(), 1)
         root.addWidget(self._build_footer())
+
+    def _build_workspace_tabs(self) -> QTabWidget:
+        self.workspace_tabs.setDocumentMode(True)
+        self.workspace_tabs.addTab(self._build_testplan_tab(), "Testplan")
+        self.workspace_tabs.addTab(self._build_channel_tab(), "Kanaele")
+        self.workspace_tabs.addTab(self._build_automation_tab(), "Automatisierung")
+        self.workspace_tabs.addTab(self._build_log_tab(), "Protokoll")
+        return self.workspace_tabs
+
+    def _build_testplan_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 10, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(self._build_table_group(), 1)
+        return tab
+
+    def _build_channel_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 10, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(self._build_channel_group(), 0, Qt.AlignTop)
+        layout.addStretch(1)
+        return tab
+
+    def _build_automation_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 10, 0, 0)
+        layout.setSpacing(12)
+
+        info_group = QGroupBox("Automatisierte Testserien")
+        info_layout = QVBoxLayout(info_group)
+        info_text = QLabel(
+            "Dieser Bereich ist als naechster Ausbauschritt fuer mehrere Testplaene, "
+            "Wiederholungen, Varianten und spaetere Ergebnisansichten vorgesehen.\n\n"
+            "So bleibt der bisherige Einzeltest uebersichtlich, waehrend wir kuenftig "
+            "automatisierte Testlaeufe sauber getrennt erweitern koennen."
+        )
+        info_text.setWordWrap(True)
+        info_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        info_layout.addWidget(info_text)
+
+        layout.addWidget(info_group, 0, Qt.AlignTop)
+        layout.addStretch(1)
+        return tab
+
+    def _build_log_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 10, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(self._build_log_group(), 1)
+        return tab
 
     def _build_connection_group(self) -> QGroupBox:
         group = QGroupBox("Verbindung")
@@ -559,6 +606,29 @@ class ModbusMainWindow(QMainWindow):
                 subcontrol-origin: margin;
                 left: 12px;
                 padding: 0 6px;
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {theme["border"]};
+                border-radius: 10px;
+                background: {theme["window_bg"]};
+                margin-top: 10px;
+            }}
+            QTabBar::tab {{
+                background: {theme["button_bg"]};
+                border: 1px solid {theme["input_border"]};
+                border-bottom: none;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                padding: 9px 16px;
+                margin-right: 4px;
+                min-width: 118px;
+            }}
+            QTabBar::tab:hover {{
+                background: {theme["button_hover"]};
+            }}
+            QTabBar::tab:selected {{
+                background: {theme["group_bg"]};
+                color: {theme["text_primary"]};
             }}
             QPushButton {{
                 min-height: 34px;
