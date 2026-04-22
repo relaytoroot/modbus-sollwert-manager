@@ -57,10 +57,7 @@ from .models import (
     STATUS_RUNNING,
 )
 from .app_info import (
-    APP_AUTHOR,
-    APP_COMPANY,
     APP_NAME,
-    APP_VERSION,
     HEADER_LOGO_FILE,
     ICON_FILE,
     resource_path,
@@ -348,10 +345,6 @@ class ModbusMainWindow(QMainWindow):
 
         self.logo_label = QLabel()
         self._configure_logo()
-        self.author_label = QLabel(
-            f"{APP_COMPANY} | {APP_NAME} | Version {APP_VERSION} | {APP_AUTHOR}"
-        )
-        self.author_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.status_badge = QLabel("Getrennt")
         self.status_badge.setAlignment(Qt.AlignCenter)
@@ -363,10 +356,7 @@ class ModbusMainWindow(QMainWindow):
         self.stage_remaining_value = QLabel("00:00:00")
         self.total_remaining_value = QLabel("00:00:00")
         self.total_time_value = QLabel("00:00:00")
-        self.last_write_value = QLabel("Noch keine Schreibaktion")
-        self.address_info = QLabel("Registeradressen sind nullbasiert.")
-        self.scpi_info_label = QLabel("Direkte SCPI-Kommandos fuer Messgeraete und Quellen.")
-        self.scpi_info_label.setWordWrap(True)
+        self.last_write_value = QLabel("-")
         self.scpi_command_input = QLineEdit()
         self.scpi_command_input.setPlaceholderText("z. B. *IDN? oder MEAS:VOLT?")
         self.scpi_connect_button = QPushButton("Verbinden")
@@ -389,7 +379,7 @@ class ModbusMainWindow(QMainWindow):
         self.log_panel.setMinimumHeight(120)
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setObjectName("workspaceTabs")
-        self.automation_summary_label = QLabel("Noch keine Serienjobs geplant.")
+        self.automation_summary_label = QLabel("Keine Serienjobs vorhanden.")
         self.automation_summary_label.setWordWrap(True)
         self.automation_start_button = QPushButton("Serienlauf starten")
         self.automation_add_current_button = QPushButton("Aktuellen Plan uebernehmen")
@@ -405,7 +395,7 @@ class ModbusMainWindow(QMainWindow):
         self.automation_result_duration_value = QLabel("-")
         self.automation_result_success_value = QLabel("0")
         self.automation_result_failed_value = QLabel("0")
-        self.automation_result_message_value = QLabel("Noch keine Rueckmeldung")
+        self.automation_result_message_value = QLabel("-")
         self.automation_result_message_value.setWordWrap(True)
         self.automation_result_message_value.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.automation_history_panel = QPlainTextEdit()
@@ -436,7 +426,7 @@ class ModbusMainWindow(QMainWindow):
         self._refresh_automation_result_panel()
         self._update_manual_write_buttons()
         self._update_scpi_buttons()
-        self._append_log("Anwendung gestartet. Bitte Verbindung pruefen und Testplan laden oder erstellen.")
+        self._append_log("Anwendung gestartet.")
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -451,7 +441,6 @@ class ModbusMainWindow(QMainWindow):
         top_cards.addWidget(self._build_control_group(), 3)
         root.addLayout(top_cards)
         root.addWidget(self._build_workspace_tabs(), 1)
-        root.addWidget(self._build_footer())
 
     def _build_workspace_tabs(self) -> QTabWidget:
         self.workspace_tabs.setDocumentMode(True)
@@ -493,7 +482,6 @@ class ModbusMainWindow(QMainWindow):
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(12)
         detail_layout.addWidget(self._build_automation_results_group())
-        detail_layout.addWidget(self._build_automation_hint_group())
         detail_layout.addStretch(1)
 
         self.automation_splitter = QSplitter(Qt.Horizontal)
@@ -572,20 +560,6 @@ class ModbusMainWindow(QMainWindow):
         layout.addWidget(self.automation_history_panel)
         return group
 
-    def _build_automation_hint_group(self) -> QGroupBox:
-        group = QGroupBox("Hinweis")
-        layout = QVBoxLayout(group)
-        group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        info_text = QLabel(
-            "Die Serienplanung, automatische Abarbeitung und Laufuebersicht sind jetzt "
-            "getrennt vom eigentlichen Testplan aufgebaut. Darauf kann im naechsten "
-            "Schritt eine SCPI-Steuerung sauber aufsetzen, ohne die Modbus-Logik zu vermischen."
-        )
-        info_text.setWordWrap(True)
-        info_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        layout.addWidget(info_text)
-        return group
-
     def _build_scpi_connection_group(self) -> QGroupBox:
         group = QGroupBox("SCPI-Verbindung")
         layout = QGridLayout(group)
@@ -605,7 +579,6 @@ class ModbusMainWindow(QMainWindow):
         status_col = QVBoxLayout()
         status_col.addWidget(QLabel("Status"))
         status_col.addWidget(self.scpi_status_badge)
-        status_col.addWidget(self.scpi_info_label)
         status_col.addStretch(1)
         layout.addLayout(status_col, 0, 2)
         layout.setColumnStretch(0, 1)
@@ -660,7 +633,6 @@ class ModbusMainWindow(QMainWindow):
         status_col = QVBoxLayout()
         status_col.addWidget(QLabel("Status"))
         status_col.addWidget(self.status_badge)
-        status_col.addWidget(self.address_info)
         status_col.addStretch(1)
         layout.addLayout(status_col, 0, 3)
         layout.setColumnStretch(1, 1)
@@ -762,14 +734,6 @@ class ModbusMainWindow(QMainWindow):
         layout.addWidget(self.log_panel)
         return group
 
-    def _build_footer(self) -> QWidget:
-        footer = QWidget()
-        layout = QHBoxLayout(footer)
-        layout.setContentsMargins(2, 0, 2, 0)
-        layout.addStretch(1)
-        layout.addWidget(self.author_label, 0, Qt.AlignRight | Qt.AlignVCenter)
-        return footer
-
     def _configure_logo(self) -> None:
         if self.logo_path.exists():
             pixmap = QPixmap(str(self.logo_path)).scaled(
@@ -790,7 +754,6 @@ class ModbusMainWindow(QMainWindow):
     def _apply_styles(self) -> None:
         self.status_badge.setObjectName("statusBadge")
         self.scpi_status_badge.setObjectName("statusBadge")
-        self.author_label.setObjectName("authorLabel")
         self.copy_stage_time_button.setObjectName("secondaryButton")
         self.next_stage_button.setObjectName("secondaryButton")
         self.automation_remove_button.setObjectName("secondaryButton")
@@ -911,12 +874,6 @@ class ModbusMainWindow(QMainWindow):
             }}
             QPushButton#secondaryButton {{
                 padding: 0 10px;
-            }}
-            QLabel#authorLabel {{
-                color: {theme["author_text"]};
-                font-size: 9px;
-                font-weight: 400;
-                padding: 1px 4px;
             }}
             """
         )
@@ -1202,7 +1159,7 @@ class ModbusMainWindow(QMainWindow):
         self._set_connection_widgets(False)
         self._set_status(STATUS_DISCONNECTED, "Getrennt")
         self._append_log("Verbindung getrennt")
-        self.last_write_value.setText("Noch keine Schreibaktion")
+        self.last_write_value.setText("-")
 
     def _on_scpi_connect_clicked(self) -> None:
         settings = self._current_scpi_settings()
@@ -1691,7 +1648,7 @@ class ModbusMainWindow(QMainWindow):
             self.automation_result_duration_value.setText("-")
             self.automation_result_success_value.setText("0")
             self.automation_result_failed_value.setText("0")
-            self.automation_result_message_value.setText("Noch keine Rueckmeldung")
+            self.automation_result_message_value.setText("-")
             self.automation_history_panel.setPlainText("")
             return
         report = self._automation_reports.get(row)
@@ -1702,7 +1659,7 @@ class ModbusMainWindow(QMainWindow):
             self.automation_result_duration_value.setText("-")
             self.automation_result_success_value.setText("0")
             self.automation_result_failed_value.setText("0")
-            self.automation_result_message_value.setText("Noch keine Rueckmeldung")
+            self.automation_result_message_value.setText("-")
             self.automation_history_panel.setPlainText("")
             return
         self.automation_result_status_value.setText(report.last_status or self._automation_item_text(row, self.AUTOMATION_COLUMN_STATUS) or "-")
@@ -1711,7 +1668,7 @@ class ModbusMainWindow(QMainWindow):
         self.automation_result_duration_value.setText(self._format_automation_duration(report.last_duration_seconds))
         self.automation_result_success_value.setText(str(report.successful_runs))
         self.automation_result_failed_value.setText(str(report.failed_runs))
-        self.automation_result_message_value.setText(report.last_message or "Noch keine Rueckmeldung")
+        self.automation_result_message_value.setText(report.last_message or "-")
         self.automation_history_panel.setPlainText("\n".join(report.history))
 
     def _append_automation_entry(self, name: str, source: str, repeat_count: str = "1", note: str = "") -> None:
@@ -1816,9 +1773,7 @@ class ModbusMainWindow(QMainWindow):
                 active_jobs += 1
                 total_repeats += self._automation_repeat_count(row)
         if active_jobs == 0:
-            self.automation_summary_label.setText(
-                "Noch keine aktiven Serienjobs geplant. Du kannst den aktuellen Plan oder externe Excel-Plaene vormerken."
-            )
+            self.automation_summary_label.setText("Keine Serienjobs vorhanden.")
             return
         self.automation_summary_label.setText(
             f"{active_jobs} Serienjob(s) aktiv, {total_repeats} Wiederholung(en) insgesamt."
@@ -2381,8 +2336,7 @@ class ModbusMainWindow(QMainWindow):
             return
         source = str(self.current_file_path)
         name = self.current_file_path.stem
-        note = "Aus aktueller Konfiguration uebernommen"
-        self._append_automation_entry(name=name, source=source, repeat_count="1", note=note)
+        self._append_automation_entry(name=name, source=source, repeat_count="1", note="")
 
     def _on_add_plan_file_to_automation_clicked(self) -> None:
         start_dir = self.current_file_path.parent if self.current_file_path else Path.home()
@@ -2394,7 +2348,7 @@ class ModbusMainWindow(QMainWindow):
             name=selected_path.stem,
             source=str(selected_path),
             repeat_count="1",
-            note="Externer Plan fuer Serienlauf",
+            note="",
         )
 
     def _on_remove_automation_rows_clicked(self) -> None:
