@@ -203,6 +203,7 @@ class ModbusMainWindow(QMainWindow):
     AUTOMATION_COLUMN_SOURCE = 2
     AUTOMATION_COLUMN_REPEAT = 3
     AUTOMATION_COLUMN_NOTE = 4
+    AUTOMATION_COLUMN_STATUS = 5
     AUTOMATION_ROW_COUNT = 20
 
     def __init__(self) -> None:
@@ -222,6 +223,8 @@ class ModbusMainWindow(QMainWindow):
         self._automation_snapshot_bytes: bytes | None = None
         self._automation_snapshot_file_path: Path | None = None
         self._automation_snapshot_dirty = False
+        self._automation_runtime_statuses: dict[int, str] = {}
+        self._automation_current_row_index: int | None = None
         self.row_checkboxes: list[QCheckBox] = []
         self.automation_row_checkboxes: list[QCheckBox] = []
         self.register_inputs: list[QSpinBox] = []
@@ -351,7 +354,7 @@ class ModbusMainWindow(QMainWindow):
         self.automation_move_up_button = QPushButton("Nach oben")
         self.automation_move_down_button = QPushButton("Nach unten")
         self.automation_clear_button = QPushButton("Liste leeren")
-        self.automation_table = QTableWidget(self.AUTOMATION_ROW_COUNT, 5)
+        self.automation_table = QTableWidget(self.AUTOMATION_ROW_COUNT, 6)
 
         self.test_table = PlanTableWidget(40, 7)
         editable_columns = [
@@ -797,10 +800,11 @@ class ModbusMainWindow(QMainWindow):
             checkbox.toggled.connect(self._refresh_summary)
             checkbox.toggled.connect(self._update_time_copy_button)
             checkbox.toggled.connect(self._mark_dirty)
-        for checkbox in self.automation_row_checkboxes:
+        for row, checkbox in enumerate(self.automation_row_checkboxes):
             checkbox.toggled.connect(self._refresh_automation_summary)
             checkbox.toggled.connect(self._update_automation_buttons)
             checkbox.toggled.connect(self._mark_dirty)
+            checkbox.toggled.connect(lambda _checked, current_row=row: self._on_automation_row_toggled(current_row))
         for input_field in self.channel_label_inputs:
             input_field.textChanged.connect(self._on_channel_label_changed)
         for input_field in self.start_value_inputs:
@@ -839,7 +843,7 @@ class ModbusMainWindow(QMainWindow):
         self.test_table.blockSignals(False)
 
     def _configure_automation_table(self) -> None:
-        self.automation_table.setHorizontalHeaderLabels(["Aktiv", "Name", "Quelle", "Wiederholungen", "Notiz"])
+        self.automation_table.setHorizontalHeaderLabels(["Aktiv", "Name", "Quelle", "Wiederholungen", "Notiz", "Status"])
         self.automation_table.setAlternatingRowColors(True)
         self.automation_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.automation_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -851,16 +855,19 @@ class ModbusMainWindow(QMainWindow):
         header.setSectionResizeMode(self.AUTOMATION_COLUMN_SOURCE, QHeaderView.Stretch)
         header.setSectionResizeMode(self.AUTOMATION_COLUMN_REPEAT, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.AUTOMATION_COLUMN_NOTE, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.AUTOMATION_COLUMN_STATUS, QHeaderView.ResizeToContents)
         self.automation_table.blockSignals(True)
         for row in range(self.AUTOMATION_ROW_COUNT):
             checkbox = QCheckBox()
             checkbox.setChecked(False)
             self.automation_row_checkboxes.append(checkbox)
             self.automation_table.setCellWidget(row, self.AUTOMATION_COLUMN_ACTIVE, self._wrap_widget(checkbox))
-            for column in range(self.AUTOMATION_COLUMN_NAME, self.AUTOMATION_COLUMN_NOTE + 1):
+            for column in range(self.AUTOMATION_COLUMN_NAME, self.AUTOMATION_COLUMN_STATUS + 1):
                 item = QTableWidgetItem("")
-                if column == self.AUTOMATION_COLUMN_REPEAT:
+                if column in {self.AUTOMATION_COLUMN_REPEAT, self.AUTOMATION_COLUMN_STATUS}:
                     item.setTextAlignment(Qt.AlignCenter)
+                if column == self.AUTOMATION_COLUMN_STATUS:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.automation_table.setItem(row, column, item)
         self.automation_table.blockSignals(False)
 
@@ -1050,6 +1057,13 @@ class ModbusMainWindow(QMainWindow):
         except RuntimeError as exc:
             self._show_error("Automatisierung ungueltig", str(exc))
             return
+        self._automation_runtime_statuses = {
+            row: ("Wartet" if self.automation_row_checkboxes[row].isChecked() else self._default_automation_status(row))
+            for row in range(self.automation_table.rowCount())
+            if not self._automation_row_is_empty(row)
+        }
+        self._automation_current_row_index = None
+        self._apply_automation_statuses()
         self._capture_automation_snapshot()
         try:
             self.series_controller.start(jobs)
@@ -1195,7 +1209,12 @@ class ModbusMainWindow(QMainWindow):
             )
         workbook.save(path)
 
-    def _load_from_excel(self, path: Path | BytesIO, load_automation: bool = True) -> None:
+    def _load_from_excel(
+        self,
+        path: Path | BytesIO,
+        load_automation: bool = True,
+        preserve_automation_statuses: bool = False,
+    ) -> None:
         workbook = load_workbook(path)
         if "Verbindung" not in workbook.sheetnames or "Kanaele" not in workbook.sheetnames or "Testplan" not in workbook.sheetnames:
             raise RuntimeError("Die Excel-Datei muss die Blaetter 'Verbindung', 'Kanaele' und 'Testplan' enthalten.")
@@ -1291,7 +1310,7 @@ class ModbusMainWindow(QMainWindow):
         self._apply_row_visuals()
         self._refresh_summary()
         if load_automation:
-            self._load_automation_from_workbook(workbook)
+            self._load_automation_from_workbook(workbook, preserve_runtime_statuses=preserve_automation_statuses)
 
     def _set_combo_value(self, combo: QComboBox, raw_value: str) -> None:
         normalized_raw = getattr(raw_value, "value", raw_value)
@@ -1324,8 +1343,10 @@ class ModbusMainWindow(QMainWindow):
             item = QTableWidgetItem()
             self.automation_table.setItem(row, column, item)
         item.setText(value if value != "None" else "")
-        if column == self.AUTOMATION_COLUMN_REPEAT:
+        if column in {self.AUTOMATION_COLUMN_REPEAT, self.AUTOMATION_COLUMN_STATUS}:
             item.setTextAlignment(Qt.AlignCenter)
+        if column == self.AUTOMATION_COLUMN_STATUS:
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
 
     def _automation_row_is_empty(self, row: int) -> bool:
         return (
@@ -1348,6 +1369,33 @@ class ModbusMainWindow(QMainWindow):
     def _has_any_automation_entries(self) -> bool:
         return any(not self._automation_row_is_empty(row) for row in range(self.automation_table.rowCount()))
 
+    def _default_automation_status(self, row: int) -> str:
+        if self._automation_row_is_empty(row):
+            return ""
+        if not self.automation_row_checkboxes[row].isChecked():
+            return "Inaktiv"
+        return "Bereit"
+
+    def _apply_automation_statuses(self) -> None:
+        self._automation_ui_update_in_progress = True
+        self.automation_table.blockSignals(True)
+        try:
+            for row in range(self.automation_table.rowCount()):
+                status_text = self._automation_runtime_statuses.get(row, self._default_automation_status(row))
+                self._set_automation_item_text(row, self.AUTOMATION_COLUMN_STATUS, status_text)
+        finally:
+            self.automation_table.blockSignals(False)
+            self._automation_ui_update_in_progress = False
+
+    def _clear_automation_runtime_statuses(self) -> None:
+        self._automation_runtime_statuses = {}
+        self._automation_current_row_index = None
+        self._apply_automation_statuses()
+
+    def _set_automation_runtime_status(self, row: int, status_text: str) -> None:
+        self._automation_runtime_statuses[row] = status_text
+        self._apply_automation_statuses()
+
     def _append_automation_entry(self, name: str, source: str, repeat_count: str = "1", note: str = "") -> None:
         row = self._next_empty_automation_row()
         if row < 0:
@@ -1365,6 +1413,7 @@ class ModbusMainWindow(QMainWindow):
             self.automation_table.blockSignals(False)
             self._automation_ui_update_in_progress = False
         self.automation_table.selectRow(row)
+        self._clear_automation_runtime_statuses()
         self._mark_dirty()
         self._refresh_automation_summary()
         self._update_automation_buttons()
@@ -1373,8 +1422,9 @@ class ModbusMainWindow(QMainWindow):
         self.automation_row_checkboxes[row].setChecked(False)
         for column in range(self.AUTOMATION_COLUMN_NAME, self.AUTOMATION_COLUMN_NOTE + 1):
             self._set_automation_item_text(row, column, "")
+        self._set_automation_item_text(row, self.AUTOMATION_COLUMN_STATUS, "")
 
-    def _clear_all_automation_rows(self, mark_dirty: bool = False) -> None:
+    def _clear_all_automation_rows(self, mark_dirty: bool = False, clear_runtime_statuses: bool = True) -> None:
         self._automation_ui_update_in_progress = True
         self.automation_table.blockSignals(True)
         try:
@@ -1384,6 +1434,10 @@ class ModbusMainWindow(QMainWindow):
             self.automation_table.blockSignals(False)
             self._automation_ui_update_in_progress = False
         self.automation_table.clearSelection()
+        if clear_runtime_statuses:
+            self._clear_automation_runtime_statuses()
+        else:
+            self._apply_automation_statuses()
         if mark_dirty:
             self._mark_dirty()
 
@@ -1426,6 +1480,7 @@ class ModbusMainWindow(QMainWindow):
             return
         self._swap_automation_rows(current_row, target_row)
         self.automation_table.selectRow(target_row)
+        self._clear_automation_runtime_statuses()
         self._mark_dirty()
         self._refresh_automation_summary()
         self._update_automation_buttons()
@@ -1457,9 +1512,13 @@ class ModbusMainWindow(QMainWindow):
         except ValueError:
             return 1
 
-    def _load_automation_from_workbook(self, workbook) -> None:
-        self._clear_all_automation_rows()
+    def _load_automation_from_workbook(self, workbook, preserve_runtime_statuses: bool = False) -> None:
+        self._clear_all_automation_rows(clear_runtime_statuses=not preserve_runtime_statuses)
         if "Automatisierung" not in workbook.sheetnames:
+            if preserve_runtime_statuses:
+                self._apply_automation_statuses()
+            else:
+                self._clear_automation_runtime_statuses()
             self._refresh_automation_summary()
             self._update_automation_buttons()
             return
@@ -1490,6 +1549,10 @@ class ModbusMainWindow(QMainWindow):
         finally:
             self.automation_table.blockSignals(False)
             self._automation_ui_update_in_progress = False
+        if preserve_runtime_statuses:
+            self._apply_automation_statuses()
+        else:
+            self._clear_automation_runtime_statuses()
         self._refresh_automation_summary()
         self._update_automation_buttons()
 
@@ -1532,7 +1595,12 @@ class ModbusMainWindow(QMainWindow):
     def _restore_automation_snapshot(self) -> None:
         if self._automation_snapshot_bytes is None:
             return
-        self._load_from_excel(BytesIO(self._automation_snapshot_bytes), load_automation=True)
+        self._load_from_excel(
+            BytesIO(self._automation_snapshot_bytes),
+            load_automation=True,
+            preserve_automation_statuses=True,
+        )
+        self._apply_automation_statuses()
         self.current_file_path = self._automation_snapshot_file_path
         if self.modbus_service.is_connected:
             self.modbus_service.update_runtime_settings(self._current_settings())
@@ -1645,8 +1713,15 @@ class ModbusMainWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignCenter)
             finally:
                 self._automation_ui_update_in_progress = False
+        if not self.series_controller.is_running and item.column() != self.AUTOMATION_COLUMN_STATUS:
+            self._clear_automation_runtime_statuses()
         self._refresh_automation_summary()
         self._update_automation_buttons()
+
+    def _on_automation_row_toggled(self, _row: int) -> None:
+        if self._automation_ui_update_in_progress or self.series_controller.is_running:
+            return
+        self._clear_automation_runtime_statuses()
 
     def _refresh_summary(self) -> None:
         if self.sequence_controller.has_active_plan:
@@ -1808,6 +1883,8 @@ class ModbusMainWindow(QMainWindow):
         run_index: int,
         run_total: int,
     ) -> None:
+        self._automation_current_row_index = row_index
+        self._set_automation_runtime_status(row_index, f"Laeuft {repeat_index}/{repeat_total}")
         self.automation_table.selectRow(row_index)
         self.workspace_tabs.setCurrentIndex(0)
         self.automation_summary_label.setText(
@@ -1824,6 +1901,9 @@ class ModbusMainWindow(QMainWindow):
         run_index: int,
         run_total: int,
     ) -> None:
+        self._automation_current_row_index = None
+        status_text = "Fertig" if repeat_index >= repeat_total else "Wartet"
+        self._set_automation_runtime_status(row_index, status_text)
         self.automation_table.selectRow(row_index)
         self.automation_summary_label.setText(
             f"Letzter abgeschlossener Serienjob: {name} | Wiederholung {repeat_index}/{repeat_total} | Durchgang {run_index}/{run_total}"
@@ -1842,20 +1922,30 @@ class ModbusMainWindow(QMainWindow):
         self._set_status(STATUS_FINISHED, "Serienlauf fertig")
         self.last_write_value.setText("Serienlauf abgeschlossen")
         self._highlight_current_row(-1)
-        self._refresh_automation_summary()
+        completed_jobs = sum(1 for status in self._automation_runtime_statuses.values() if status == "Fertig")
+        if completed_jobs:
+            self.automation_summary_label.setText(f"Serienlauf abgeschlossen: {completed_jobs} Job(s) fertig.")
+        else:
+            self._refresh_automation_summary()
 
     def _on_automation_stopped(self) -> None:
+        if self._automation_current_row_index is not None:
+            self._set_automation_runtime_status(self._automation_current_row_index, "Gestoppt")
+            self._automation_current_row_index = None
         self._restore_automation_snapshot()
         self._highlight_current_row(-1)
-        self._refresh_automation_summary()
+        self.automation_summary_label.setText("Serienlauf gestoppt.")
 
     def _on_automation_error(self, message: str) -> None:
+        if self._automation_current_row_index is not None:
+            self._set_automation_runtime_status(self._automation_current_row_index, "Fehler")
+            self._automation_current_row_index = None
         self._restore_automation_snapshot()
         self._set_running_widgets(False)
         self._set_status(STATUS_ERROR, "Fehler")
         self.last_write_value.setText(message)
         self._highlight_current_row(-1)
-        self._refresh_automation_summary()
+        self.automation_summary_label.setText("Serienlauf mit Fehler beendet.")
         self._show_error("Serienlauf fehlgeschlagen", message)
 
     def _on_stage_write_completed(self, stage_number: int, message: str) -> None:

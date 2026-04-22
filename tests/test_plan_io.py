@@ -238,6 +238,10 @@ class PlanIoTests(unittest.TestCase):
                 reloaded_window._automation_item_text(1, reloaded_window.AUTOMATION_COLUMN_NOTE),
                 "Warmstart",
             )
+            self.assertEqual(
+                reloaded_window._automation_item_text(0, reloaded_window.AUTOMATION_COLUMN_STATUS),
+                "Bereit",
+            )
         finally:
             reloaded_window._set_dirty(False)
             reloaded_window.close()
@@ -268,12 +272,32 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window.sequence_controller.start.call_count, 1)
         self.assertEqual(self.window.current_file_path, Path("C:/Tests/Serienmaster.xlsx"))
         self.assertEqual(self.window.workspace_tabs.tabText(self.window.workspace_tabs.currentIndex()), "Testplan")
+        self.assertEqual(
+            self.window._automation_item_text(0, self.window.AUTOMATION_COLUMN_STATUS),
+            "Laeuft 1/1",
+        )
+        self.assertEqual(
+            self.window._automation_item_text(1, self.window.AUTOMATION_COLUMN_STATUS),
+            "Wartet",
+        )
 
         self.window._on_sequence_finished()
         self.assertEqual(self.window.sequence_controller.start.call_count, 2)
+        self.assertEqual(
+            self.window._automation_item_text(0, self.window.AUTOMATION_COLUMN_STATUS),
+            "Fertig",
+        )
+        self.assertEqual(
+            self.window._automation_item_text(1, self.window.AUTOMATION_COLUMN_STATUS),
+            "Laeuft 1/2",
+        )
 
         self.window._on_sequence_finished()
         self.assertEqual(self.window.sequence_controller.start.call_count, 3)
+        self.assertEqual(
+            self.window._automation_item_text(1, self.window.AUTOMATION_COLUMN_STATUS),
+            "Laeuft 2/2",
+        )
 
         self.window._on_sequence_finished()
         self.assertFalse(self.window.series_controller.is_running)
@@ -281,6 +305,14 @@ class PlanIoTests(unittest.TestCase):
         self.assertEqual(self.window.channel_label_inputs[0].text(), "Originalzustand")
         self.assertEqual(self.window.current_file_path, Path("C:/Tests/Serienmaster.xlsx"))
         self.assertTrue(self.window._has_unsaved_changes)
+        self.assertEqual(
+            self.window._automation_item_text(0, self.window.AUTOMATION_COLUMN_STATUS),
+            "Fertig",
+        )
+        self.assertEqual(
+            self.window._automation_item_text(1, self.window.AUTOMATION_COLUMN_STATUS),
+            "Fertig",
+        )
 
     def test_connect_can_retry_after_failure(self) -> None:
         first_error = RuntimeError("slave antwortet nicht")
