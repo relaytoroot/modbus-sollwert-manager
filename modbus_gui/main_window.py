@@ -26,7 +26,9 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
+    QSplitter,
     QStyledItemDelegate,
     QTabWidget,
     QTableWidget,
@@ -369,9 +371,13 @@ class ModbusMainWindow(QMainWindow):
         self.automation_result_failed_value = QLabel("0")
         self.automation_result_message_value = QLabel("Noch keine Rueckmeldung")
         self.automation_result_message_value.setWordWrap(True)
+        self.automation_result_message_value.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.automation_history_panel = QPlainTextEdit()
         self.automation_history_panel.setReadOnly(True)
         self.automation_history_panel.setMinimumHeight(110)
+        self.automation_history_panel.setMaximumHeight(150)
+        self.automation_splitter: QSplitter | None = None
+        self.automation_detail_panel: QWidget | None = None
 
         self.test_table = PlanTableWidget(40, 7)
         editable_columns = [
@@ -441,9 +447,26 @@ class ModbusMainWindow(QMainWindow):
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(12)
         layout.addWidget(self._build_automation_overview_group())
-        layout.addWidget(self._build_automation_queue_group(), 1)
-        layout.addWidget(self._build_automation_results_group())
-        layout.addWidget(self._build_automation_hint_group())
+
+        self.automation_detail_panel = QWidget()
+        self.automation_detail_panel.setMinimumWidth(320)
+        self.automation_detail_panel.setMaximumWidth(420)
+        detail_layout = QVBoxLayout(self.automation_detail_panel)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(12)
+        detail_layout.addWidget(self._build_automation_results_group())
+        detail_layout.addWidget(self._build_automation_hint_group())
+        detail_layout.addStretch(1)
+
+        self.automation_splitter = QSplitter(Qt.Horizontal)
+        self.automation_splitter.setChildrenCollapsible(False)
+        self.automation_splitter.setHandleWidth(8)
+        self.automation_splitter.addWidget(self._build_automation_queue_group())
+        self.automation_splitter.addWidget(self.automation_detail_panel)
+        self.automation_splitter.setStretchFactor(0, 4)
+        self.automation_splitter.setStretchFactor(1, 1)
+        self.automation_splitter.setSizes([980, 360])
+        layout.addWidget(self.automation_splitter, 1)
         return tab
 
     def _build_automation_overview_group(self) -> QGroupBox:
@@ -467,28 +490,34 @@ class ModbusMainWindow(QMainWindow):
     def _build_automation_queue_group(self) -> QGroupBox:
         group = QGroupBox("Serienliste")
         layout = QVBoxLayout(group)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
         layout.addWidget(self.automation_table)
+        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         return group
 
     def _build_automation_results_group(self) -> QGroupBox:
         group = QGroupBox("Laufergebnis")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
+        group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 
         summary_grid = QGridLayout()
+        summary_grid.setHorizontalSpacing(12)
+        summary_grid.setVerticalSpacing(6)
         summary_grid.addWidget(QLabel("Status"), 0, 0)
         summary_grid.addWidget(self.automation_result_status_value, 0, 1)
-        summary_grid.addWidget(QLabel("Gestartet"), 0, 2)
-        summary_grid.addWidget(self.automation_result_started_value, 0, 3)
-        summary_grid.addWidget(QLabel("Beendet"), 1, 0)
-        summary_grid.addWidget(self.automation_result_finished_value, 1, 1)
-        summary_grid.addWidget(QLabel("Letzte Dauer"), 1, 2)
-        summary_grid.addWidget(self.automation_result_duration_value, 1, 3)
-        summary_grid.addWidget(QLabel("Erfolgreiche Durchgaenge"), 2, 0)
+        summary_grid.addWidget(QLabel("Dauer"), 0, 2)
+        summary_grid.addWidget(self.automation_result_duration_value, 0, 3)
+        summary_grid.addWidget(QLabel("Gestartet"), 1, 0)
+        summary_grid.addWidget(self.automation_result_started_value, 1, 1)
+        summary_grid.addWidget(QLabel("Beendet"), 1, 2)
+        summary_grid.addWidget(self.automation_result_finished_value, 1, 3)
+        summary_grid.addWidget(QLabel("Erfolge"), 2, 0)
         summary_grid.addWidget(self.automation_result_success_value, 2, 1)
         summary_grid.addWidget(QLabel("Fehler"), 2, 2)
         summary_grid.addWidget(self.automation_result_failed_value, 2, 3)
-        summary_grid.addWidget(QLabel("Letzte Rueckmeldung"), 3, 0)
+        summary_grid.addWidget(QLabel("Letzte Meldung"), 3, 0)
         summary_grid.addWidget(self.automation_result_message_value, 3, 1, 1, 3)
         summary_grid.setColumnStretch(1, 1)
         summary_grid.setColumnStretch(3, 1)
@@ -499,6 +528,7 @@ class ModbusMainWindow(QMainWindow):
     def _build_automation_hint_group(self) -> QGroupBox:
         group = QGroupBox("Hinweis")
         layout = QVBoxLayout(group)
+        group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         info_text = QLabel(
             "Die Serienplanung, automatische Abarbeitung und Laufuebersicht sind jetzt "
             "getrennt vom eigentlichen Testplan aufgebaut. Darauf kann im naechsten "
@@ -894,14 +924,16 @@ class ModbusMainWindow(QMainWindow):
         self.automation_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.automation_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.automation_table.setSortingEnabled(False)
+        self.automation_table.setMinimumHeight(340)
         self.automation_table.verticalHeader().setDefaultSectionSize(30)
         header = self.automation_table.horizontalHeader()
         header.setSectionResizeMode(self.AUTOMATION_COLUMN_ACTIVE, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(self.AUTOMATION_COLUMN_NAME, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(self.AUTOMATION_COLUMN_SOURCE, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.AUTOMATION_COLUMN_NAME, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.AUTOMATION_COLUMN_SOURCE, QHeaderView.Interactive)
         header.setSectionResizeMode(self.AUTOMATION_COLUMN_REPEAT, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self.AUTOMATION_COLUMN_NOTE, QHeaderView.Stretch)
         header.setSectionResizeMode(self.AUTOMATION_COLUMN_STATUS, QHeaderView.ResizeToContents)
+        self.automation_table.setColumnWidth(self.AUTOMATION_COLUMN_SOURCE, 250)
         self.automation_table.blockSignals(True)
         for row in range(self.AUTOMATION_ROW_COUNT):
             checkbox = QCheckBox()

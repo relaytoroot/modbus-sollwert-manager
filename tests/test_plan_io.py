@@ -183,6 +183,10 @@ class PlanIoTests(unittest.TestCase):
             [self.window.workspace_tabs.tabText(index) for index in range(self.window.workspace_tabs.count())],
             ["Testplan", "Kanaele", "Automatisierung", "Protokoll"],
         )
+        self.assertIsNotNone(self.window.automation_splitter)
+        self.assertIsNotNone(self.window.automation_detail_panel)
+        self.assertGreaterEqual(self.window.automation_table.minimumHeight(), 340)
+        self.assertLessEqual(self.window.automation_detail_panel.maximumWidth(), 420)
 
     def test_current_plan_can_be_added_to_automation_queue(self) -> None:
         self.window.current_file_path = Path("C:/Tests/Basislauf.xlsx")
