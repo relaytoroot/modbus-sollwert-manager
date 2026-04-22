@@ -195,6 +195,12 @@ class ModbusMainWindow(QMainWindow):
     COLUMN_VALUE_START = 2
     COLUMN_DURATION = 6
     CHANNEL_COUNT = 4
+    AUTOMATION_COLUMN_ACTIVE = 0
+    AUTOMATION_COLUMN_NAME = 1
+    AUTOMATION_COLUMN_SOURCE = 2
+    AUTOMATION_COLUMN_REPEAT = 3
+    AUTOMATION_COLUMN_NOTE = 4
+    AUTOMATION_ROW_COUNT = 20
 
     def __init__(self) -> None:
         super().__init__()
@@ -210,6 +216,7 @@ class ModbusMainWindow(QMainWindow):
         self.current_file_path: Path | None = None
         self._has_unsaved_changes = False
         self.row_checkboxes: list[QCheckBox] = []
+        self.automation_row_checkboxes: list[QCheckBox] = []
         self.register_inputs: list[QSpinBox] = []
         self.channel_label_inputs: list[QLineEdit] = []
         self.type_inputs: list[QComboBox] = []
@@ -217,6 +224,7 @@ class ModbusMainWindow(QMainWindow):
         self.send_value_buttons: list[QPushButton] = []
         self.current_highlight_row = -1
         self._table_ui_update_in_progress = False
+        self._automation_ui_update_in_progress = False
         self.current_theme = "light"
         self.current_status_key = STATUS_DISCONNECTED
         self.current_status_text = "Getrennt"
@@ -327,6 +335,15 @@ class ModbusMainWindow(QMainWindow):
         self.log_panel.setMinimumHeight(120)
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setObjectName("workspaceTabs")
+        self.automation_summary_label = QLabel("Noch keine Serienjobs geplant.")
+        self.automation_summary_label.setWordWrap(True)
+        self.automation_add_current_button = QPushButton("Aktuellen Plan uebernehmen")
+        self.automation_add_file_button = QPushButton("Plan aus Datei")
+        self.automation_remove_button = QPushButton("Auswahl entfernen")
+        self.automation_move_up_button = QPushButton("Nach oben")
+        self.automation_move_down_button = QPushButton("Nach unten")
+        self.automation_clear_button = QPushButton("Liste leeren")
+        self.automation_table = QTableWidget(self.AUTOMATION_ROW_COUNT, 5)
 
         self.test_table = PlanTableWidget(40, 7)
         editable_columns = [
@@ -337,12 +354,15 @@ class ModbusMainWindow(QMainWindow):
             self.test_table.setItemDelegateForColumn(column, NumericItemDelegate(self.test_table))
 
         self._configure_table()
+        self._configure_automation_table()
         self._build_ui()
         self._apply_styles()
         self._connect_signals()
         self._set_status(STATUS_DISCONNECTED, "Getrennt")
         self._apply_row_visuals()
         self._refresh_summary()
+        self._refresh_automation_summary()
+        self._update_automation_buttons()
         self._update_manual_write_buttons()
         self._append_log("Anwendung gestartet. Bitte Verbindung pruefen und Testplan laden oder erstellen.")
 
@@ -391,22 +411,46 @@ class ModbusMainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(12)
+        layout.addWidget(self._build_automation_overview_group())
+        layout.addWidget(self._build_automation_queue_group(), 1)
+        layout.addWidget(self._build_automation_hint_group())
+        return tab
 
-        info_group = QGroupBox("Automatisierte Testserien")
-        info_layout = QVBoxLayout(info_group)
+    def _build_automation_overview_group(self) -> QGroupBox:
+        group = QGroupBox("Serienplanung")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.automation_add_current_button)
+        button_row.addWidget(self.automation_add_file_button)
+        button_row.addWidget(self.automation_remove_button)
+        button_row.addWidget(self.automation_move_up_button)
+        button_row.addWidget(self.automation_move_down_button)
+        button_row.addWidget(self.automation_clear_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+        layout.addWidget(self.automation_summary_label)
+        return group
+
+    def _build_automation_queue_group(self) -> QGroupBox:
+        group = QGroupBox("Serienliste")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.automation_table)
+        return group
+
+    def _build_automation_hint_group(self) -> QGroupBox:
+        group = QGroupBox("Hinweis")
+        layout = QVBoxLayout(group)
         info_text = QLabel(
-            "Dieser Bereich ist als naechster Ausbauschritt fuer mehrere Testplaene, "
-            "Wiederholungen, Varianten und spaetere Ergebnisansichten vorgesehen.\n\n"
-            "So bleibt der bisherige Einzeltest uebersichtlich, waehrend wir kuenftig "
-            "automatisierte Testlaeufe sauber getrennt erweitern koennen."
+            "Hier bereitest du bereits mehrere Testplaene, Wiederholungen und Kommentare "
+            "fuer einen spaeteren Serienlauf vor. Die eigentliche automatische Ausfuehrung "
+            "bauen wir im naechsten Schritt auf dieser Struktur auf."
         )
         info_text.setWordWrap(True)
         info_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        info_layout.addWidget(info_text)
-
-        layout.addWidget(info_group, 0, Qt.AlignTop)
-        layout.addStretch(1)
-        return tab
+        layout.addWidget(info_text)
+        return group
 
     def _build_log_tab(self) -> QWidget:
         tab = QWidget()
@@ -573,6 +617,10 @@ class ModbusMainWindow(QMainWindow):
         self.author_label.setObjectName("authorLabel")
         self.copy_stage_time_button.setObjectName("secondaryButton")
         self.next_stage_button.setObjectName("secondaryButton")
+        self.automation_remove_button.setObjectName("secondaryButton")
+        self.automation_move_up_button.setObjectName("secondaryButton")
+        self.automation_move_down_button.setObjectName("secondaryButton")
+        self.automation_clear_button.setObjectName("secondaryButton")
         self._apply_theme(self.current_theme)
 
     def _apply_theme(self, theme_name: str) -> None:
@@ -709,9 +757,17 @@ class ModbusMainWindow(QMainWindow):
         self.save_button.clicked.connect(self._on_save_clicked)
         self.load_button.clicked.connect(self._on_load_clicked)
         self.copy_stage_time_button.clicked.connect(self._copy_first_stage_time_to_active_rows)
+        self.automation_add_current_button.clicked.connect(self._on_add_current_plan_to_automation_clicked)
+        self.automation_add_file_button.clicked.connect(self._on_add_plan_file_to_automation_clicked)
+        self.automation_remove_button.clicked.connect(self._on_remove_automation_rows_clicked)
+        self.automation_move_up_button.clicked.connect(lambda: self._move_automation_row(-1))
+        self.automation_move_down_button.clicked.connect(lambda: self._move_automation_row(1))
+        self.automation_clear_button.clicked.connect(self._on_clear_automation_clicked)
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
         self.keepalive_input.valueChanged.connect(self._update_keepalive_timer_interval)
         self.test_table.itemChanged.connect(self._on_table_item_changed)
+        self.automation_table.itemChanged.connect(self._on_automation_table_item_changed)
+        self.automation_table.itemSelectionChanged.connect(self._update_automation_buttons)
         self.sequence_controller.log_message.connect(self._append_log)
         self.sequence_controller.state_changed.connect(self._set_status)
         self.sequence_controller.stage_changed.connect(self._on_stage_changed)
@@ -723,6 +779,10 @@ class ModbusMainWindow(QMainWindow):
             checkbox.toggled.connect(self._apply_row_visuals)
             checkbox.toggled.connect(self._refresh_summary)
             checkbox.toggled.connect(self._update_time_copy_button)
+            checkbox.toggled.connect(self._mark_dirty)
+        for checkbox in self.automation_row_checkboxes:
+            checkbox.toggled.connect(self._refresh_automation_summary)
+            checkbox.toggled.connect(self._update_automation_buttons)
             checkbox.toggled.connect(self._mark_dirty)
         for input_field in self.channel_label_inputs:
             input_field.textChanged.connect(self._on_channel_label_changed)
@@ -760,6 +820,32 @@ class ModbusMainWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignCenter)
                 self.test_table.setItem(row, column, item)
         self.test_table.blockSignals(False)
+
+    def _configure_automation_table(self) -> None:
+        self.automation_table.setHorizontalHeaderLabels(["Aktiv", "Name", "Quelle", "Wiederholungen", "Notiz"])
+        self.automation_table.setAlternatingRowColors(True)
+        self.automation_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.automation_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.automation_table.setSortingEnabled(False)
+        self.automation_table.verticalHeader().setDefaultSectionSize(30)
+        header = self.automation_table.horizontalHeader()
+        header.setSectionResizeMode(self.AUTOMATION_COLUMN_ACTIVE, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.AUTOMATION_COLUMN_NAME, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.AUTOMATION_COLUMN_SOURCE, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.AUTOMATION_COLUMN_REPEAT, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.AUTOMATION_COLUMN_NOTE, QHeaderView.Stretch)
+        self.automation_table.blockSignals(True)
+        for row in range(self.AUTOMATION_ROW_COUNT):
+            checkbox = QCheckBox()
+            checkbox.setChecked(False)
+            self.automation_row_checkboxes.append(checkbox)
+            self.automation_table.setCellWidget(row, self.AUTOMATION_COLUMN_ACTIVE, self._wrap_widget(checkbox))
+            for column in range(self.AUTOMATION_COLUMN_NAME, self.AUTOMATION_COLUMN_NOTE + 1):
+                item = QTableWidgetItem("")
+                if column == self.AUTOMATION_COLUMN_REPEAT:
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.automation_table.setItem(row, column, item)
+        self.automation_table.blockSignals(False)
 
     def _wrap_widget(self, widget: QWidget) -> QWidget:
         container = QWidget()
@@ -1051,6 +1137,20 @@ class ModbusMainWindow(QMainWindow):
                     self._item_text(row, self.COLUMN_DURATION),
                 ]
             )
+        sheet_automation = workbook.create_sheet("Automatisierung")
+        sheet_automation.append(["active", "name", "source", "repeat_count", "note"])
+        for row in range(self.automation_table.rowCount()):
+            if self._automation_row_is_empty(row):
+                continue
+            sheet_automation.append(
+                [
+                    self.automation_row_checkboxes[row].isChecked(),
+                    self._automation_item_text(row, self.AUTOMATION_COLUMN_NAME),
+                    self._automation_item_text(row, self.AUTOMATION_COLUMN_SOURCE),
+                    self._automation_item_text(row, self.AUTOMATION_COLUMN_REPEAT),
+                    self._automation_item_text(row, self.AUTOMATION_COLUMN_NOTE),
+                ]
+            )
         workbook.save(path)
 
     def _load_from_excel(self, path: Path) -> None:
@@ -1148,6 +1248,7 @@ class ModbusMainWindow(QMainWindow):
         self._update_time_copy_button()
         self._apply_row_visuals()
         self._refresh_summary()
+        self._load_automation_from_workbook(workbook)
 
     def _set_combo_value(self, combo: QComboBox, raw_value: str) -> None:
         normalized_raw = getattr(raw_value, "value", raw_value)
@@ -1169,6 +1270,185 @@ class ModbusMainWindow(QMainWindow):
             self.test_table.setItem(row, column, item)
         item.setText(value if value != "None" else "")
         item.setTextAlignment(Qt.AlignCenter)
+
+    def _automation_item_text(self, row: int, column: int) -> str:
+        item = self.automation_table.item(row, column)
+        return "" if item is None else item.text().strip()
+
+    def _set_automation_item_text(self, row: int, column: int, value: str) -> None:
+        item = self.automation_table.item(row, column)
+        if item is None:
+            item = QTableWidgetItem()
+            self.automation_table.setItem(row, column, item)
+        item.setText(value if value != "None" else "")
+        if column == self.AUTOMATION_COLUMN_REPEAT:
+            item.setTextAlignment(Qt.AlignCenter)
+
+    def _automation_row_is_empty(self, row: int) -> bool:
+        return (
+            not self.automation_row_checkboxes[row].isChecked()
+            and not any(
+                self._automation_item_text(row, column)
+                for column in range(self.AUTOMATION_COLUMN_NAME, self.AUTOMATION_COLUMN_NOTE + 1)
+            )
+        )
+
+    def _selected_automation_rows(self) -> list[int]:
+        return sorted({index.row() for index in self.automation_table.selectionModel().selectedRows()})
+
+    def _next_empty_automation_row(self) -> int:
+        for row in range(self.automation_table.rowCount()):
+            if self._automation_row_is_empty(row):
+                return row
+        return -1
+
+    def _has_any_automation_entries(self) -> bool:
+        return any(not self._automation_row_is_empty(row) for row in range(self.automation_table.rowCount()))
+
+    def _append_automation_entry(self, name: str, source: str, repeat_count: str = "1", note: str = "") -> None:
+        row = self._next_empty_automation_row()
+        if row < 0:
+            self._show_error("Serienliste voll", "Bitte zuerst bestehende Eintraege entfernen oder die Liste leeren.")
+            return
+        self._automation_ui_update_in_progress = True
+        self.automation_table.blockSignals(True)
+        try:
+            self.automation_row_checkboxes[row].setChecked(True)
+            self._set_automation_item_text(row, self.AUTOMATION_COLUMN_NAME, name)
+            self._set_automation_item_text(row, self.AUTOMATION_COLUMN_SOURCE, source)
+            self._set_automation_item_text(row, self.AUTOMATION_COLUMN_REPEAT, repeat_count)
+            self._set_automation_item_text(row, self.AUTOMATION_COLUMN_NOTE, note)
+        finally:
+            self.automation_table.blockSignals(False)
+            self._automation_ui_update_in_progress = False
+        self.automation_table.selectRow(row)
+        self._mark_dirty()
+        self._refresh_automation_summary()
+        self._update_automation_buttons()
+
+    def _clear_automation_row(self, row: int) -> None:
+        self.automation_row_checkboxes[row].setChecked(False)
+        for column in range(self.AUTOMATION_COLUMN_NAME, self.AUTOMATION_COLUMN_NOTE + 1):
+            self._set_automation_item_text(row, column, "")
+
+    def _clear_all_automation_rows(self, mark_dirty: bool = False) -> None:
+        self._automation_ui_update_in_progress = True
+        self.automation_table.blockSignals(True)
+        try:
+            for row in range(self.automation_table.rowCount()):
+                self._clear_automation_row(row)
+        finally:
+            self.automation_table.blockSignals(False)
+            self._automation_ui_update_in_progress = False
+        self.automation_table.clearSelection()
+        if mark_dirty:
+            self._mark_dirty()
+
+    def _swap_automation_rows(self, source_row: int, target_row: int) -> None:
+        source_data = (
+            self.automation_row_checkboxes[source_row].isChecked(),
+            self._automation_item_text(source_row, self.AUTOMATION_COLUMN_NAME),
+            self._automation_item_text(source_row, self.AUTOMATION_COLUMN_SOURCE),
+            self._automation_item_text(source_row, self.AUTOMATION_COLUMN_REPEAT),
+            self._automation_item_text(source_row, self.AUTOMATION_COLUMN_NOTE),
+        )
+        target_data = (
+            self.automation_row_checkboxes[target_row].isChecked(),
+            self._automation_item_text(target_row, self.AUTOMATION_COLUMN_NAME),
+            self._automation_item_text(target_row, self.AUTOMATION_COLUMN_SOURCE),
+            self._automation_item_text(target_row, self.AUTOMATION_COLUMN_REPEAT),
+            self._automation_item_text(target_row, self.AUTOMATION_COLUMN_NOTE),
+        )
+        self._automation_ui_update_in_progress = True
+        self.automation_table.blockSignals(True)
+        try:
+            self.automation_row_checkboxes[source_row].setChecked(target_data[0])
+            self._set_automation_item_text(source_row, self.AUTOMATION_COLUMN_NAME, target_data[1])
+            self._set_automation_item_text(source_row, self.AUTOMATION_COLUMN_SOURCE, target_data[2])
+            self._set_automation_item_text(source_row, self.AUTOMATION_COLUMN_REPEAT, target_data[3])
+            self._set_automation_item_text(source_row, self.AUTOMATION_COLUMN_NOTE, target_data[4])
+            self.automation_row_checkboxes[target_row].setChecked(source_data[0])
+            self._set_automation_item_text(target_row, self.AUTOMATION_COLUMN_NAME, source_data[1])
+            self._set_automation_item_text(target_row, self.AUTOMATION_COLUMN_SOURCE, source_data[2])
+            self._set_automation_item_text(target_row, self.AUTOMATION_COLUMN_REPEAT, source_data[3])
+            self._set_automation_item_text(target_row, self.AUTOMATION_COLUMN_NOTE, source_data[4])
+        finally:
+            self.automation_table.blockSignals(False)
+            self._automation_ui_update_in_progress = False
+
+    def _move_automation_row(self, direction: int) -> None:
+        current_row = self.automation_table.currentRow()
+        target_row = current_row + direction
+        if current_row < 0 or target_row < 0 or target_row >= self.automation_table.rowCount():
+            return
+        self._swap_automation_rows(current_row, target_row)
+        self.automation_table.selectRow(target_row)
+        self._mark_dirty()
+        self._refresh_automation_summary()
+        self._update_automation_buttons()
+
+    def _refresh_automation_summary(self) -> None:
+        active_jobs = 0
+        total_repeats = 0
+        for row in range(self.automation_table.rowCount()):
+            if self._automation_row_is_empty(row):
+                continue
+            if self.automation_row_checkboxes[row].isChecked():
+                active_jobs += 1
+                total_repeats += self._automation_repeat_count(row)
+        if active_jobs == 0:
+            self.automation_summary_label.setText(
+                "Noch keine aktiven Serienjobs geplant. Du kannst den aktuellen Plan oder externe Excel-Plaene vormerken."
+            )
+            return
+        self.automation_summary_label.setText(
+            f"{active_jobs} Serienjob(s) aktiv, {total_repeats} Wiederholung(en) insgesamt."
+        )
+
+    def _automation_repeat_count(self, row: int) -> int:
+        text = self._automation_item_text(row, self.AUTOMATION_COLUMN_REPEAT).replace(",", ".")
+        if not text:
+            return 1
+        try:
+            return max(1, int(round(float(text))))
+        except ValueError:
+            return 1
+
+    def _load_automation_from_workbook(self, workbook) -> None:
+        self._clear_all_automation_rows()
+        if "Automatisierung" not in workbook.sheetnames:
+            self._refresh_automation_summary()
+            self._update_automation_buttons()
+            return
+        rows = []
+        automation_sheet = workbook["Automatisierung"]
+        for row in automation_sheet.iter_rows(min_row=2, max_col=5, values_only=True):
+            if not any(value is not None and str(value).strip() for value in row):
+                continue
+            rows.append(
+                {
+                    "active": bool(row[0]),
+                    "name": "" if row[1] is None else str(row[1]),
+                    "source": "" if row[2] is None else str(row[2]),
+                    "repeat_count": "1" if row[3] is None else str(row[3]),
+                    "note": "" if row[4] is None else str(row[4]),
+                }
+            )
+        self._automation_ui_update_in_progress = True
+        self.automation_table.blockSignals(True)
+        try:
+            for row in range(min(len(rows), self.automation_table.rowCount())):
+                row_data = rows[row]
+                self.automation_row_checkboxes[row].setChecked(bool(row_data["active"]))
+                self._set_automation_item_text(row, self.AUTOMATION_COLUMN_NAME, row_data["name"])
+                self._set_automation_item_text(row, self.AUTOMATION_COLUMN_SOURCE, row_data["source"])
+                self._set_automation_item_text(row, self.AUTOMATION_COLUMN_REPEAT, row_data["repeat_count"])
+                self._set_automation_item_text(row, self.AUTOMATION_COLUMN_NOTE, row_data["note"])
+        finally:
+            self.automation_table.blockSignals(False)
+            self._automation_ui_update_in_progress = False
+        self._refresh_automation_summary()
+        self._update_automation_buttons()
 
     def _copy_first_stage_time_to_active_rows(self) -> None:
         source_text = self._item_text(0, self.COLUMN_DURATION)
@@ -1243,6 +1523,19 @@ class ModbusMainWindow(QMainWindow):
         finally:
             self._table_ui_update_in_progress = False
 
+    def _on_automation_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._automation_ui_update_in_progress:
+            return
+        self._mark_dirty()
+        if item.column() == self.AUTOMATION_COLUMN_REPEAT:
+            self._automation_ui_update_in_progress = True
+            try:
+                item.setTextAlignment(Qt.AlignCenter)
+            finally:
+                self._automation_ui_update_in_progress = False
+        self._refresh_automation_summary()
+        self._update_automation_buttons()
+
     def _refresh_summary(self) -> None:
         if self.sequence_controller.has_active_plan:
             return
@@ -1297,6 +1590,7 @@ class ModbusMainWindow(QMainWindow):
         self.load_button.setEnabled(not running)
         self.copy_stage_time_button.setEnabled(False)
         self.test_table.setEnabled(True)
+        self.automation_table.setEnabled(not running)
         for spin_box in self.register_inputs:
             spin_box.setEnabled(not running)
         for input_field in self.channel_label_inputs:
@@ -1309,6 +1603,7 @@ class ModbusMainWindow(QMainWindow):
         self._update_manual_write_buttons()
         self._update_time_copy_button()
         self._update_pause_button()
+        self._update_automation_buttons()
         self._apply_row_visuals()
 
     def _update_pause_button(self) -> None:
@@ -1331,6 +1626,19 @@ class ModbusMainWindow(QMainWindow):
         has_target_rows = any(self.row_checkboxes[row].isChecked() for row in range(1, self.test_table.rowCount()))
         self.copy_stage_time_button.setEnabled(
             has_source_time and has_target_rows and not self.sequence_controller.has_active_plan
+        )
+
+    def _update_automation_buttons(self) -> None:
+        not_running = not self.sequence_controller.has_active_plan
+        selected_rows = self._selected_automation_rows()
+        current_row = self.automation_table.currentRow()
+        self.automation_add_current_button.setEnabled(not_running)
+        self.automation_add_file_button.setEnabled(not_running)
+        self.automation_remove_button.setEnabled(not_running and bool(selected_rows))
+        self.automation_clear_button.setEnabled(not_running and self._has_any_automation_entries())
+        self.automation_move_up_button.setEnabled(not_running and current_row > 0)
+        self.automation_move_down_button.setEnabled(
+            not_running and 0 <= current_row < self.automation_table.rowCount() - 1
         )
 
     def _set_status(self, status: str, text: str) -> None:
@@ -1379,6 +1687,48 @@ class ModbusMainWindow(QMainWindow):
     def _on_channel_label_changed(self) -> None:
         self._update_table_headers()
         self._mark_dirty()
+
+    def _on_add_current_plan_to_automation_clicked(self) -> None:
+        source = str(self.current_file_path) if self.current_file_path else "Aktuelle Sitzung (noch nicht gespeichert)"
+        name = self.current_file_path.stem if self.current_file_path else "Aktueller Testplan"
+        note = "Aus aktueller Konfiguration uebernommen"
+        self._append_automation_entry(name=name, source=source, repeat_count="1", note=note)
+
+    def _on_add_plan_file_to_automation_clicked(self) -> None:
+        start_dir = self.current_file_path.parent if self.current_file_path else Path.home()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Plan fuer Serienlauf auswaehlen", str(start_dir), "Excel-Dateien (*.xlsx)")
+        if not file_path:
+            return
+        selected_path = Path(file_path)
+        self._append_automation_entry(
+            name=selected_path.stem,
+            source=str(selected_path),
+            repeat_count="1",
+            note="Externer Plan fuer Serienlauf",
+        )
+
+    def _on_remove_automation_rows_clicked(self) -> None:
+        selected_rows = self._selected_automation_rows()
+        if not selected_rows:
+            return
+        self._automation_ui_update_in_progress = True
+        self.automation_table.blockSignals(True)
+        try:
+            for row in selected_rows:
+                self._clear_automation_row(row)
+        finally:
+            self.automation_table.blockSignals(False)
+            self._automation_ui_update_in_progress = False
+        self._mark_dirty()
+        self._refresh_automation_summary()
+        self._update_automation_buttons()
+
+    def _on_clear_automation_clicked(self) -> None:
+        if not self._has_any_automation_entries():
+            return
+        self._clear_all_automation_rows(mark_dirty=True)
+        self._refresh_automation_summary()
+        self._update_automation_buttons()
 
     def _update_table_headers(self) -> None:
         headers = ["Aktiv", "Stufe"]

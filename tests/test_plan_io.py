@@ -14,7 +14,7 @@ from modbus_gui.main_window import ModbusMainWindow
 from modbus_gui.models import RegisterFormat, RegisterValueType
 
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_plan.xlsx"
+FIXTURE_PATH = Path(__file__).parent / "artifacts" / "sample_plan_runtime.xlsx"
 OUTPUT_PATH = Path(__file__).parent / "artifacts" / "roundtrip.xlsx"
 
 
@@ -183,6 +183,64 @@ class PlanIoTests(unittest.TestCase):
             [self.window.workspace_tabs.tabText(index) for index in range(self.window.workspace_tabs.count())],
             ["Testplan", "Kanaele", "Automatisierung", "Protokoll"],
         )
+
+    def test_current_plan_can_be_added_to_automation_queue(self) -> None:
+        self.window.current_file_path = Path("C:/Tests/Basislauf.xlsx")
+        expected_source = str(self.window.current_file_path)
+
+        self.window._on_add_current_plan_to_automation_clicked()
+
+        self.assertTrue(self.window.automation_row_checkboxes[0].isChecked())
+        self.assertEqual(self.window._automation_item_text(0, self.window.AUTOMATION_COLUMN_NAME), "Basislauf")
+        self.assertEqual(
+            self.window._automation_item_text(0, self.window.AUTOMATION_COLUMN_SOURCE),
+            expected_source,
+        )
+        self.assertEqual(self.window._automation_item_text(0, self.window.AUTOMATION_COLUMN_REPEAT), "1")
+
+    def test_save_and_load_roundtrip_preserves_automation_queue(self) -> None:
+        self.window._append_automation_entry(
+            name="Basislauf",
+            source="C:/Tests/Basislauf.xlsx",
+            repeat_count="3",
+            note="Abgleich mit Referenzgeraet",
+        )
+        self.window._append_automation_entry(
+            name="Variantenlauf",
+            source="C:/Tests/Variante_A.xlsx",
+            repeat_count="2",
+            note="Warmstart",
+        )
+
+        OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.window._save_to_excel(OUTPUT_PATH)
+        workbook = load_workbook(OUTPUT_PATH)
+
+        self.assertIn("Automatisierung", workbook.sheetnames)
+        automation_sheet = workbook["Automatisierung"]
+        saved_jobs = list(automation_sheet.iter_rows(min_row=2, max_col=5, values_only=True))
+        self.assertEqual(saved_jobs[0], (True, "Basislauf", "C:/Tests/Basislauf.xlsx", "3", "Abgleich mit Referenzgeraet"))
+        self.assertEqual(saved_jobs[1], (True, "Variantenlauf", "C:/Tests/Variante_A.xlsx", "2", "Warmstart"))
+
+        reloaded_window = ModbusMainWindow()
+        try:
+            reloaded_window._load_from_excel(OUTPUT_PATH)
+            self.assertTrue(reloaded_window.automation_row_checkboxes[0].isChecked())
+            self.assertEqual(
+                reloaded_window._automation_item_text(0, reloaded_window.AUTOMATION_COLUMN_NAME),
+                "Basislauf",
+            )
+            self.assertEqual(
+                reloaded_window._automation_item_text(0, reloaded_window.AUTOMATION_COLUMN_SOURCE),
+                "C:/Tests/Basislauf.xlsx",
+            )
+            self.assertEqual(
+                reloaded_window._automation_item_text(1, reloaded_window.AUTOMATION_COLUMN_NOTE),
+                "Warmstart",
+            )
+        finally:
+            reloaded_window._set_dirty(False)
+            reloaded_window.close()
 
     def test_connect_can_retry_after_failure(self) -> None:
         first_error = RuntimeError("slave antwortet nicht")
